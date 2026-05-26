@@ -29,3 +29,6 @@ htmlcov/
 .idea/
 .vscode/
 *.swp
+
+# Runtime state
+strategy_state.json

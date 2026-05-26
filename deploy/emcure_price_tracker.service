@@ -1,0 +1,28 @@
+# NOTE: This file is a reference template only.
+# The production service file is generated automatically by deploy.sh,
+# which fills in the correct paths, log locations, and environment.
+#
+# To deploy: sudo bash deploy/deploy.sh
+
+[Unit]
+Description=EmcurePriceTracker — Headless NSE Swing Trader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=emcure
+Group=emcure
+WorkingDirectory=/opt/emcure
+ExecStart=/opt/emcure/venv/bin/python3 /opt/emcure/main_headless.py
+Restart=on-failure
+RestartSec=30
+EnvironmentFile=/opt/emcure/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=LOKY_MAX_CPU_COUNT=1
+Environment=OMP_NUM_THREADS=1
+StandardOutput=append:/var/log/emcure/tracker.log
+StandardError=append:/var/log/emcure/tracker.err
+
+[Install]
+WantedBy=multi-user.target
