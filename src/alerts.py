@@ -58,14 +58,15 @@ def send_whatsapp_alert(
         from twilio.rest import Client
 
         client = Client(account_sid, auth_token)
-        client.messages.create(
+        msg = client.messages.create(
             from_=f"whatsapp:{from_number}",
             to=f"whatsapp:{to_number}",
             body=message,
         )
+        logger.warning("WhatsApp sent OK  sid=%s  to=%s  chars=%d", msg.sid, to_number, len(message))
         return True
     except Exception:
-        logger.exception("send_whatsapp_alert failed")
+        logger.exception("send_whatsapp_alert failed  to=%s", to_number)
         return False
 
 

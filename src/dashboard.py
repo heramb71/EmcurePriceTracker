@@ -32,7 +32,7 @@ def _nearest_level_name(price: float, pivots: dict, cam: dict, bb: dict) -> str:
         d = abs(price - val)
         if d < best_dist:
             best_dist, best_name = d, name
-    pct_away = best_dist / price * 100
+    pct_away = best_dist / price * 100 if price > 0 else 999
     return f"≈ {best_name}" if pct_away < 1.5 else ""
 
 

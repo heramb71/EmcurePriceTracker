@@ -1,0 +1,23 @@
+[Unit]
+Description=Emcure WhatsApp Trade Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=emcure
+Group=emcure
+WorkingDirectory=/opt/emcure
+ExecStart=/opt/emcure/venv/bin/python3 /opt/emcure/bot_server.py
+Restart=always
+RestartSec=10
+EnvironmentFile=/opt/emcure/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=LOKY_MAX_CPU_COUNT=1
+Environment=OMP_NUM_THREADS=1
+Environment=BOT_PORT=5001
+StandardOutput=append:/var/log/emcure/bot.log
+StandardError=append:/var/log/emcure/bot.err
+
+[Install]
+WantedBy=multi-user.target

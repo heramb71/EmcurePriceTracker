@@ -23,6 +23,9 @@ rich>=13.7
 python-telegram-bot>=21.0
 twilio>=9.0
 
+# WhatsApp bot server
+flask>=3.0
+
 # Config
 python-dotenv>=1.0
 

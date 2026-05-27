@@ -58,6 +58,7 @@ from src.predictor   import (
     predict_trade,
     format_pre_open_briefing,
     format_post_open_briefing,
+    format_eod_summary,
 )
 from src.indicators import (
     compute_rsi,
@@ -76,6 +77,7 @@ from src.scoring import (
     compute_ml_target_probabilities,
     compute_intraday_probabilities,
 )
+from src.trade_manager import check_and_mark, format_target_alert
 from src.alerts import (
     send_alert,
     send_whatsapp_alert,
@@ -332,6 +334,9 @@ def _refresh(ticker: str, news_snapshot: dict | None = None) -> dict:
         "news_snapshot":    news_snapshot or {},
         "news_sent_label":  news_sent_label,
         "news_sent_score":  news_sent_score,
+        # Official last daily close — used for pre-open briefing (avoids
+        # fast_info.last_price which can differ from the official close)
+        "daily_close":      round(float(df_daily["close"].iloc[-1]), 2),
     }
 
 
@@ -357,16 +362,16 @@ def main() -> None:
             data = _refresh(TICKER, news_snapshot=news_snap)
             last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            # ── Scheduled pre-open briefing (9:00 AM) ────────────────────────
+            # ── Scheduled pre-open briefing (9:00–9:14 AM, once per day) ────────
             now_t = datetime.now()
-            if wa_ready and now_t.hour == 9 and now_t.minute == 0:
+            if wa_ready and now_t.hour == 9 and now_t.minute < 15:
                 pre_key = f"pre_open_{now_t.date()}"
                 if pre_key not in last_alerted:
                     q         = data.get("quote", {})
                     s7        = data.get("sma7_gap", {})
                     briefing  = format_pre_open_briefing(
                         ticker         = TICKER,
-                        price          = q.get("prev_close") or q.get("price", 0),
+                        price          = data.get("daily_close") or q.get("price", 0),
                         sma7           = s7.get("sma7", 0),
                         trend_7d       = data.get("trend_7d", "Unknown"),
                         atr            = data.get("indicators", {}).get("atr", 30),
@@ -384,8 +389,8 @@ def main() -> None:
                     )
                     last_alerted[pre_key] = now_t
 
-            # ── Scheduled post-open update (9:20 AM) ─────────────────────────
-            if wa_ready and now_t.hour == 9 and now_t.minute == 20:
+            # ── Scheduled post-open update (9:20–9:59 AM, once per day) ─────────
+            if wa_ready and now_t.hour == 9 and now_t.minute >= 20:
                 post_key = f"post_open_{now_t.date()}"
                 if post_key not in last_alerted:
                     q        = data.get("quote", {})
@@ -408,6 +413,37 @@ def main() -> None:
                         post_msg,
                     )
                     last_alerted[post_key] = now_t
+
+            # ── Scheduled EOD summary (3:30–3:59 PM, once per day) ───────────
+            if wa_ready and now_t.hour == 15 and now_t.minute >= 30:
+                eod_key = f"eod_{now_t.date()}"
+                if eod_key not in last_alerted:
+                    q   = data.get("quote", {})
+                    s7  = data.get("sma7_gap", {})
+                    from src.trade_manager import get_trade
+                    active = get_trade()
+                    eod_msg = format_eod_summary(
+                        ticker        = TICKER,
+                        open_price    = float(q.get("open",  q.get("price", 0)) or 0),
+                        high          = float(q.get("high",  q.get("price", 0)) or 0),
+                        low           = float(q.get("low",   q.get("price", 0)) or 0),
+                        close         = data.get("daily_close") or float(q.get("price", 0)),
+                        change_pct    = float(q.get("change_pct", 0) or 0),
+                        sma7          = s7.get("sma7", 0),
+                        atr           = data.get("indicators", {}).get("atr", 30),
+                        capital       = CAPITAL,
+                        risk_rupees   = RISK_RUPEES,
+                        prior_losses  = data.get("prior_losses", 0),
+                        day_pnl       = 0.0,
+                        trades_today  = 0,
+                        now           = now_t,
+                    )
+                    send_whatsapp_alert(
+                        TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
+                        TWILIO_WHATSAPP_FROM, TWILIO_WHATSAPP_TO,
+                        eod_msg,
+                    )
+                    last_alerted[eod_key] = now_t
 
             # ── Dispatch intraday entry signal alert ──────────────────────────
             intra_sig = data.get("intra_signal", {})
@@ -473,6 +509,22 @@ def main() -> None:
                             intra_msg,
                         )
                     last_alerted[sig_key] = datetime.now()
+
+            # ── Manual trade: T1 / T2 / T3 / SL alerts ──────────────────────
+            q_now     = data.get("quote", {})
+            day_high  = float(q_now.get("high", 0) or 0)
+            day_low   = float(q_now.get("low",  0) or 0)
+            cur_price = float(q_now.get("price", 0) or 0)
+            if cur_price > 0 and day_high > 0:
+                hits = check_and_mark(cur_price, day_high, day_low)
+                for hit in hits:
+                    msg = format_target_alert(TICKER, hit, cur_price)
+                    if wa_ready:
+                        send_whatsapp_alert(
+                            TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
+                            TWILIO_WHATSAPP_FROM, TWILIO_WHATSAPP_TO,
+                            msg,
+                        )
 
             # ── Dispatch time-based exit alert ────────────────────────────────
             time_act = data.get("time_action")

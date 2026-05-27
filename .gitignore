@@ -32,3 +32,9 @@ htmlcov/
 
 # Runtime state
 strategy_state.json
+trade_state.json
+
+# SSH keys
+*.pem
+emcurekey
+emcurekey.pub
