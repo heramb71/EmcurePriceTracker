@@ -32,11 +32,12 @@ from src.trade_manager import set_trade, clear_trade, get_trade, current_pnl
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
-TICKER           = os.getenv("TICKER", "EMCURE")
-CAPITAL          = float(os.getenv("CAPITAL", "100000"))
-RISK_RUPEES      = float(os.getenv("RISK_RUPEES", "4500"))
-AUTHORIZED       = os.getenv("TWILIO_WHATSAPP_TO", "").replace("whatsapp:", "")
+TICKER            = os.getenv("TICKER", "EMCURE")
+CAPITAL           = float(os.getenv("CAPITAL", "100000"))
+RISK_RUPEES       = float(os.getenv("RISK_RUPEES", "4500"))
+AUTHORIZED        = os.getenv("TWILIO_WHATSAPP_TO", "").replace("whatsapp:", "")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+HEALTH_API_KEY    = os.getenv("HEALTH_API_KEY", "")
 
 
 def _live_price() -> float:
@@ -183,6 +184,14 @@ def whatsapp():
 
 @app.route("/health")
 def health():
+    if HEALTH_API_KEY:
+        provided = (
+            request.args.get("key")
+            or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        )
+        if provided != HEALTH_API_KEY:
+            return Response("Unauthorized", status=401)
+
     trade = get_trade()
     return {
         "status":       "ok",
