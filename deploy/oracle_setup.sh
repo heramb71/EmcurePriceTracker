@@ -62,10 +62,10 @@ apt-get install -y -qq python3 python3-venv python3-pip git nginx certbot python
 # ── 2. Firewall ───────────────────────────────────────────────────────────────
 step "Firewall — opening ports 80 and 443"
 # Oracle Cloud Ubuntu images use iptables; also enable ufw
-iptables  -I INPUT 6 -m state --state NEW -p tcp --dport 80  -j ACCEPT
-iptables  -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
-ip6tables -I INPUT 6 -m state --state NEW -p tcp --dport 80  -j ACCEPT
-ip6tables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
+iptables  -A INPUT -m state --state NEW -p tcp --dport 80  -j ACCEPT || true
+iptables  -A INPUT -m state --state NEW -p tcp --dport 443 -j ACCEPT || true
+ip6tables -A INPUT -m state --state NEW -p tcp --dport 80  -j ACCEPT || true
+ip6tables -A INPUT -m state --state NEW -p tcp --dport 443 -j ACCEPT || true
 netfilter-persistent save 2>/dev/null || true
 ufw allow 80/tcp  2>/dev/null || true
 ufw allow 443/tcp 2>/dev/null || true
