@@ -23,16 +23,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from flask import Flask, request, Response
+from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from src.trade_manager import set_trade, clear_trade, get_trade, current_pnl
 
 app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
-TICKER      = os.getenv("TICKER", "EMCURE")
-CAPITAL     = float(os.getenv("CAPITAL", "100000"))
-RISK_RUPEES = float(os.getenv("RISK_RUPEES", "4500"))
-AUTHORIZED  = os.getenv("TWILIO_WHATSAPP_TO", "").replace("whatsapp:", "")
+TICKER           = os.getenv("TICKER", "EMCURE")
+CAPITAL          = float(os.getenv("CAPITAL", "100000"))
+RISK_RUPEES      = float(os.getenv("RISK_RUPEES", "4500"))
+AUTHORIZED       = os.getenv("TWILIO_WHATSAPP_TO", "").replace("whatsapp:", "")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
 
 
 def _live_price() -> float:
@@ -150,6 +154,13 @@ _HANDLERS = {
 
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp():
+    # Validate Twilio request signature — rejects forged/replayed requests
+    if TWILIO_AUTH_TOKEN:
+        validator = RequestValidator(TWILIO_AUTH_TOKEN)
+        signature = request.headers.get("X-Twilio-Signature", "")
+        if not validator.validate(request.url, request.form, signature):
+            return Response("Forbidden", status=403)
+
     from_num = request.form.get("From", "").replace("whatsapp:", "")
 
     if AUTHORIZED and from_num != AUTHORIZED:
@@ -191,4 +202,4 @@ if __name__ == "__main__":
     print(f"   Listening on http://localhost:{port}/whatsapp")
     print(f"   Authorized number: {AUTHORIZED or 'all'}")
     print(f"   Commands: BUY <price>, SELL, STATUS, HELP\n")
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="127.0.0.1", port=port, debug=False)

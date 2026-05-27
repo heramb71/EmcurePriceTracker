@@ -57,15 +57,16 @@ read -rp "DuckDNS domain (e.g. emcure-bot.duckdns.org): " DOMAIN
 # ── 1. System packages ────────────────────────────────────────────────────────
 step "System packages"
 apt-get update -qq
-apt-get install -y -qq python3 python3-venv python3-pip git nginx certbot python3-certbot-nginx ufw iptables-persistent
+apt-get install -y -qq python3 python3-venv python3-pip git nginx certbot python3-certbot-nginx ufw iptables-persistent fail2ban
 
 # ── 2. Firewall ───────────────────────────────────────────────────────────────
 step "Firewall — opening ports 80 and 443"
-# Oracle Cloud Ubuntu images use iptables; also enable ufw
-iptables  -A INPUT -m state --state NEW -p tcp --dport 80  -j ACCEPT || true
-iptables  -A INPUT -m state --state NEW -p tcp --dport 443 -j ACCEPT || true
-ip6tables -A INPUT -m state --state NEW -p tcp --dport 80  -j ACCEPT || true
-ip6tables -A INPUT -m state --state NEW -p tcp --dport 443 -j ACCEPT || true
+# Oracle Cloud has a REJECT ALL rule at iptables position 5.
+# Use -I INPUT 5 (insert before REJECT) — never -A (appends after REJECT, has no effect).
+iptables  -I INPUT 5 -m state --state NEW -p tcp --dport 80  -j ACCEPT || true
+iptables  -I INPUT 5 -m state --state NEW -p tcp --dport 443 -j ACCEPT || true
+ip6tables -I INPUT 5 -m state --state NEW -p tcp --dport 80  -j ACCEPT || true
+ip6tables -I INPUT 5 -m state --state NEW -p tcp --dport 443 -j ACCEPT || true
 netfilter-persistent save 2>/dev/null || true
 ufw allow 80/tcp  2>/dev/null || true
 ufw allow 443/tcp 2>/dev/null || true
@@ -200,13 +201,37 @@ systemctl daemon-reload
 systemctl enable "$TRACKER_SERVICE" "$BOT_SERVICE"
 info "Services enabled."
 
-# ── 10. Nginx ─────────────────────────────────────────────────────────────────
+# ── 10. Nginx rate-limit zone ─────────────────────────────────────────────────
+step "Nginx rate-limit zone"
+cat > /etc/nginx/conf.d/emcure-ratelimit.conf <<'EOF'
+# 10 requests/minute per IP on the /whatsapp webhook
+limit_req_zone $binary_remote_addr zone=webhook:10m rate=10r/m;
+EOF
+
+# ── 11. Nginx reverse proxy ───────────────────────────────────────────────────
 step "Nginx reverse proxy"
 NGINX_CONF="/etc/nginx/sites-available/emcure-bot"
 cat > "$NGINX_CONF" <<EOF
 server {
     listen 80;
     server_name ${DOMAIN};
+
+    # Security headers
+    add_header X-Frame-Options DENY always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
+    add_header X-XSS-Protection "1; mode=block" always;
+
+    # Rate-limited WhatsApp webhook
+    location /whatsapp {
+        limit_req zone=webhook burst=5 nodelay;
+        proxy_pass         http://127.0.0.1:5001;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 30s;
+    }
 
     location / {
         proxy_pass         http://127.0.0.1:5001;
@@ -223,13 +248,48 @@ rm -f /etc/nginx/sites-enabled/default
 nginx -t && systemctl reload nginx
 info "Nginx configured for $DOMAIN"
 
-# ── 11. SSL via Let's Encrypt ─────────────────────────────────────────────────
+# ── 12. SSL via Let's Encrypt ─────────────────────────────────────────────────
 step "SSL certificate (Let's Encrypt)"
 info "Requesting certificate for $DOMAIN ..."
 certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "admin@${DOMAIN}" --redirect
 info "SSL certificate installed. Auto-renews via certbot timer."
 
-# ── 12. Logrotate ─────────────────────────────────────────────────────────────
+# ── 12a. HSTS header (only safe after SSL is live) ───────────────────────────
+# certbot --redirect converts port 80 to HTTPS; now safe to add HSTS
+python3 - "$NGINX_CONF" <<'PYEOF'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    content = f.read()
+if "Strict-Transport-Security" not in content:
+    content = content.replace(
+        "    add_header X-XSS-Protection",
+        '    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;\n    add_header X-XSS-Protection',
+    )
+    with open(path, "w") as f:
+        f.write(content)
+    print("HSTS header added.")
+PYEOF
+nginx -t && systemctl reload nginx
+
+# ── 13. SSH hardening ─────────────────────────────────────────────────────────
+step "SSH hardening"
+SSHD="/etc/ssh/sshd_config"
+sed -i 's/^#*\s*PasswordAuthentication.*/PasswordAuthentication no/'  "$SSHD"
+sed -i 's/^#*\s*PermitRootLogin.*/PermitRootLogin no/'                 "$SSHD"
+grep -q "^MaxAuthTries" "$SSHD" \
+  && sed -i 's/^MaxAuthTries.*/MaxAuthTries 3/' "$SSHD" \
+  || echo "MaxAuthTries 3" >> "$SSHD"
+systemctl restart ssh
+info "SSH hardened — password auth off, root login off, max 3 tries."
+
+# ── 14. fail2ban ──────────────────────────────────────────────────────────────
+step "fail2ban"
+systemctl enable fail2ban
+systemctl start  fail2ban
+info "fail2ban active."
+
+# ── 15. Logrotate ─────────────────────────────────────────────────────────────
 cat > /etc/logrotate.d/emcure <<EOF
 ${LOG_DIR}/*.log ${LOG_DIR}/*.err {
     daily
@@ -242,7 +302,7 @@ ${LOG_DIR}/*.log ${LOG_DIR}/*.err {
 }
 EOF
 
-# ── 13. Start services ────────────────────────────────────────────────────────
+# ── 16. Start services ────────────────────────────────────────────────────────
 step "Starting services"
 systemctl restart "$BOT_SERVICE" "$TRACKER_SERVICE"
 sleep 3
