@@ -57,6 +57,7 @@ from src.intraday   import (
     time_exit_action,
 )
 from src.news_monitor import NewsMonitor
+from src.holidays import is_market_holiday, format_holiday_alert
 from src.predictor   import (
     predict_trade,
     format_pre_open_briefing,
@@ -365,8 +366,24 @@ def main() -> None:
             data = _refresh(TICKER, news_snapshot=news_snap)
             last_updated = datetime.now(_IST).strftime("%Y-%m-%d %H:%M:%S")
 
-            # ── Scheduled pre-open briefing (9:00–9:14 AM, once per day) ────────
             now_t = datetime.now(_IST)
+
+            # ── Holiday check (9:00–9:14 AM, once per day) ───────────────────
+            if wa_ready and now_t.hour == 9 and now_t.minute < 15:
+                holiday_key = f"holiday_{now_t.date()}"
+                if holiday_key not in last_alerted and is_market_holiday(now_t.date()):
+                    send_whatsapp_alert(
+                        TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
+                        TWILIO_WHATSAPP_FROM, TWILIO_WHATSAPP_TO,
+                        format_holiday_alert(TICKER, now_t.date()),
+                    )
+                    # Mark all daily alerts as sent so nothing else fires today
+                    last_alerted[holiday_key]              = now_t
+                    last_alerted[f"pre_open_{now_t.date()}"]  = now_t
+                    last_alerted[f"post_open_{now_t.date()}"] = now_t
+                    last_alerted[f"eod_{now_t.date()}"]       = now_t
+
+            # ── Scheduled pre-open briefing (9:00–9:14 AM, once per day) ────────
             if wa_ready and now_t.hour == 9 and now_t.minute < 15:
                 pre_key = f"pre_open_{now_t.date()}"
                 if pre_key not in last_alerted:

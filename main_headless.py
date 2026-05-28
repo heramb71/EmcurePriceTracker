@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from src.sentiment import load_sentiment_model
+from src.holidays import is_market_holiday, format_holiday_alert
 from src.alerts import (
     send_alert,
     send_whatsapp_alert,
@@ -50,9 +51,11 @@ def _now_ist() -> datetime:
 
 
 def _is_market_open(now: datetime | None = None) -> bool:
-    """Return True if NSE is currently open (Mon–Fri, 9:15–15:30 IST)."""
+    """Return True if NSE is currently open (Mon–Fri, 9:15–15:30 IST, non-holiday)."""
     now = now or _now_ist()
-    if now.weekday() >= 5:  # Saturday=5, Sunday=6
+    if now.weekday() >= 5:
+        return False
+    if is_market_holiday(now.date()):
         return False
     t = now.time()
     return _MARKET_OPEN <= t <= _MARKET_CLOSE
@@ -117,7 +120,26 @@ def main() -> None:
     load_sentiment_model()
     last_alerted: dict = {}
 
+    wa_ready = all([
+        os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"),
+        os.getenv("TWILIO_WHATSAPP_FROM"), os.getenv("TWILIO_WHATSAPP_TO"),
+    ])
+
     while True:
+        now = _now_ist()
+
+        # ── Holiday alert (9:00–9:14 AM, once per day) ───────────────────────
+        if wa_ready and now.hour == 9 and now.minute < 15:
+            holiday_key = f"holiday_{now.date()}"
+            if holiday_key not in last_alerted and is_market_holiday(now.date()):
+                send_whatsapp_alert(
+                    os.getenv("TWILIO_ACCOUNT_SID"), os.getenv("TWILIO_AUTH_TOKEN"),
+                    os.getenv("TWILIO_WHATSAPP_FROM"), os.getenv("TWILIO_WHATSAPP_TO"),
+                    format_holiday_alert(ticker, now.date()),
+                )
+                last_alerted[holiday_key] = now
+                logger.info("Holiday alert sent for %s", now.date())
+
         if not _is_market_open():
             _sleep_until_market_open()
             continue
