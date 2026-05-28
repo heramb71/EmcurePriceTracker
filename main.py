@@ -15,6 +15,9 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 import logging
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+_IST = ZoneInfo("Asia/Kolkata")
 
 from dotenv import load_dotenv
 from rich.live import Live
@@ -360,10 +363,10 @@ def main() -> None:
         while True:
             news_snap = news_monitor.snapshot()
             data = _refresh(TICKER, news_snapshot=news_snap)
-            last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            last_updated = datetime.now(_IST).strftime("%Y-%m-%d %H:%M:%S")
 
             # ── Scheduled pre-open briefing (9:00–9:14 AM, once per day) ────────
-            now_t = datetime.now()
+            now_t = datetime.now(_IST)
             if wa_ready and now_t.hour == 9 and now_t.minute < 15:
                 pre_key = f"pre_open_{now_t.date()}"
                 if pre_key not in last_alerted:
@@ -451,7 +454,7 @@ def main() -> None:
                 sig_key  = f"intra_{intra_sig['action']}"
                 last_t   = last_alerted.get(sig_key)
                 too_soon = (
-                    last_t and (datetime.now() - last_t).total_seconds() < 900
+                    last_t and (datetime.now(_IST) - last_t).total_seconds() < 900
                 )
                 if not too_soon:
                     rupee_lvls = data.get("rupee_levels") or {}
@@ -508,7 +511,7 @@ def main() -> None:
                             TWILIO_WHATSAPP_FROM, TWILIO_WHATSAPP_TO,
                             intra_msg,
                         )
-                    last_alerted[sig_key] = datetime.now()
+                    last_alerted[sig_key] = datetime.now(_IST)
 
             # ── Manual trade: T1 / T2 / T3 / SL alerts ──────────────────────
             q_now     = data.get("quote", {})
@@ -531,7 +534,7 @@ def main() -> None:
             if time_act and wa_ready:
                 ta_key  = f"time_{time_act['action']}"
                 last_t  = last_alerted.get(ta_key)
-                too_soon = last_t and (datetime.now() - last_t).total_seconds() < 3600
+                too_soon = last_t and (datetime.now(_IST) - last_t).total_seconds() < 3600
                 if not too_soon:
                     ta_msg = (
                         f"⏰ *{TICKER}.NS — {time_act['reason']}*\n"
@@ -544,7 +547,7 @@ def main() -> None:
                         TWILIO_WHATSAPP_FROM, TWILIO_WHATSAPP_TO,
                         ta_msg,
                     )
-                    last_alerted[ta_key] = datetime.now()
+                    last_alerted[ta_key] = datetime.now(_IST)
 
             # ── Dispatch sentiment shift alert ────────────────────────────────
             shift_alert = (data.get("news_snapshot") or {}).get("shift_alert")
@@ -586,7 +589,7 @@ def main() -> None:
                         alerted = True
 
                 if alerted:
-                    last_alerted[score_result["signal"]] = datetime.now()
+                    last_alerted[score_result["signal"]] = datetime.now(_IST)
 
             # ── Dispatch Supertrend strategy events (open / partial / close) ──
             for event_type, payload in data.get("strategy_events", []):

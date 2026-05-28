@@ -122,7 +122,7 @@ def main() -> None:
             _sleep_until_market_open()
             continue
 
-        started_at = datetime.now()
+        started_at = _now_ist()
         data = _refresh(ticker)
 
         if not data:
@@ -184,9 +184,9 @@ def main() -> None:
                         logger.warning("WhatsApp alert failed")
 
                 if alerted:
-                    last_alerted[signal] = datetime.now()
+                    last_alerted[signal] = _now_ist()
 
-        elapsed = (datetime.now() - started_at).total_seconds()
+        elapsed = (_now_ist() - started_at).total_seconds()
         sleep_for = max(1, refresh_seconds - int(elapsed))
         logger.debug("Sleeping for %s seconds", sleep_for)
         time.sleep(sleep_for)
