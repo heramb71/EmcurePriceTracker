@@ -210,6 +210,48 @@ def whatsapp():
     return str(resp)
 
 
+@app.route("/kite_callback")
+def kite_callback():
+    """
+    Zerodha redirects here after the user logs in via the login URL.
+    Exchanges request_token for access_token and notifies via WhatsApp.
+    """
+    status       = request.args.get("status", "")
+    request_token = request.args.get("request_token", "")
+
+    if status != "success" or not request_token:
+        error = request.args.get("message", "Unknown error")
+        return f"<h2>Kite login failed: {error}</h2>", 400
+
+    if not KITE_API_KEY or not KITE_API_SECRET:
+        return "<h2>KITE_API_KEY/SECRET not configured on server.</h2>", 500
+
+    try:
+        from src.broker import KiteBroker
+        broker = KiteBroker(KITE_API_KEY, KITE_API_SECRET)
+        if broker.complete_auth(request_token):
+            wa_sid  = os.getenv("TWILIO_ACCOUNT_SID", "")
+            wa_tok  = os.getenv("TWILIO_AUTH_TOKEN", "")
+            wa_from = os.getenv("TWILIO_WHATSAPP_FROM", "")
+            wa_to   = os.getenv("TWILIO_WHATSAPP_TO", "")
+            if all([wa_sid, wa_tok, wa_from, wa_to]):
+                from src.alerts import send_whatsapp_alert
+                send_whatsapp_alert(wa_sid, wa_tok, wa_from, wa_to,
+                    f"✅ Kite authenticated — auto-trading ACTIVE for today.")
+            return "<h2>✅ Kite authenticated. Auto-trading is active. You can close this tab.</h2>"
+        return "<h2>❌ Auth failed. Check server logs.</h2>", 500
+    except Exception as e:
+        return f"<h2>Error: {e}</h2>", 500
+
+
+@app.route("/kite_postback", methods=["POST"])
+def kite_postback():
+    """Zerodha order postback — logs order status updates."""
+    import logging
+    logging.getLogger("kite_postback").info("postback: %s", request.json)
+    return "", 200
+
+
 @app.route("/health")
 def health():
     if HEALTH_API_KEY:
