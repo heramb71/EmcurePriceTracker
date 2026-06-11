@@ -120,27 +120,34 @@ class KiteBroker:
             r.raise_for_status()
             logger.info("Kite auto_login step2 (TOTP) ok")
 
-            # Step 3: get request_token — follow up to 3 redirects to find it
+            # Step 3: get request_token — follow redirects and check response body
             r = s.get(
                 f"https://kite.zerodha.com/connect/login?v=3&api_key={self.api_key}",
                 allow_redirects=False,
                 timeout=15,
             )
             request_token = None
-            for _ in range(3):
+            for _ in range(4):
+                # Check Location header first
                 redirect_url = r.headers.get("location", "")
-                logger.info("auto_login redirect: %s", redirect_url)
-                match = re.search(r"request_token=([^&\s]+)", redirect_url)
-                if match:
-                    request_token = match.group(1)
+                logger.info("auto_login hop %d: status=%s location=%s", _, r.status_code, redirect_url[:120] if redirect_url else "(none)")
+                # Search both the redirect URL and the response body
+                for haystack in (redirect_url, r.text[:4000]):
+                    match = re.search(r"request_token=([A-Za-z0-9_\-]+)", haystack)
+                    if match:
+                        request_token = match.group(1)
+                        break
+                if request_token:
                     break
-                # Follow intermediate redirects (e.g. connect/finish)
                 if redirect_url and redirect_url.startswith("http"):
                     r = s.get(redirect_url, allow_redirects=False, timeout=15)
+                elif r.status_code == 200:
+                    break  # Final page, no more redirects
                 else:
                     break
             if not request_token:
-                logger.error("auto_login: could not find request_token after redirects. Last URL: %s", redirect_url)
+                logger.error("auto_login: request_token not found. Last status=%s body_snippet=%s",
+                             r.status_code, r.text[:300])
                 return False
             logger.info("Kite auto_login got request_token")
 
