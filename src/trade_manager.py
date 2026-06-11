@@ -54,6 +54,9 @@ def set_trade(entry: float, qty: int, risk_rupees: float = 4500.0) -> dict:
         "t2":         round(entry + 20, 2),
         "t3":         round(entry + 25, 2),
         "levels_hit": [],
+        # high_watermark is intentionally absent here — check_and_mark sets it
+        # on the first call so it captures the day's high *at trade entry time*,
+        # preventing false alerts from pre-entry intraday highs.
         "opened_at":  datetime.now().isoformat(timespec="seconds"),
     }
     _save(state)
@@ -80,8 +83,12 @@ def check_and_mark(price: float, day_high: float, day_low: float) -> list[dict]:
     Returns list of newly hit levels (dicts), marks each as hit so it
     only alerts once.
 
-    Uses day_high for target checks (catches intraday moves between cycles)
-    and day_low for SL checks.
+    Uses a high_watermark to prevent false T1/T2/T3 alerts when the day's
+    high was already above targets before the trade was entered. On the first
+    call after a trade is set, the watermark is initialised to the current
+    day_high and no target alerts fire. Subsequent calls only fire when
+    day_high exceeds the watermark (i.e. a NEW high was made after entry).
+    SL uses day_low and is not subject to the watermark.
     """
     state = _load()
     if not state.get("active"):
@@ -89,12 +96,42 @@ def check_and_mark(price: float, day_high: float, day_low: float) -> list[dict]:
 
     already_hit = set(state.get("levels_hit", []))
     newly_hit   = []
+    state_dirty = False
+
+    # First call after trade is set: calibrate the watermark and skip target checks.
+    if "high_watermark" not in state:
+        state["high_watermark"] = day_high
+        _save(state)
+        # Still check SL on first call — it's based on day_low, not the watermark.
+        if day_low <= state["sl"] and "SL" not in already_hit:
+            pnl = round((state["sl"] - state["entry"]) * state["qty"], 0)
+            newly_hit.append({
+                "label": "SL",
+                "level": state["sl"],
+                "kind":  "stoploss",
+                "pnl":   int(pnl),
+                "entry": state["entry"],
+                "qty":   state["qty"],
+            })
+            already_hit.add("SL")
+            state["levels_hit"] = list(already_hit)
+            _save(state)
+        return newly_hit
+
+    # Only check targets if a new intraday high was made since the watermark was set.
+    effective_high = day_high
+    if day_high > state["high_watermark"]:
+        state["high_watermark"] = day_high
+        state_dirty = True
+    else:
+        # No new high — skip target checks to avoid firing on pre-entry day highs.
+        effective_high = state["high_watermark"] - 1  # below all targets
 
     checks = [
-        ("T1", state["t1"],  day_high >= state["t1"],  "target"),
-        ("T2", state["t2"],  day_high >= state["t2"],  "target"),
-        ("T3", state["t3"],  day_high >= state["t3"],  "target"),
-        ("SL", state["sl"],  day_low  <= state["sl"],  "stoploss"),
+        ("T1", state["t1"], effective_high >= state["t1"], "target"),
+        ("T2", state["t2"], effective_high >= state["t2"], "target"),
+        ("T3", state["t3"], effective_high >= state["t3"], "target"),
+        ("SL", state["sl"], day_low <= state["sl"],        "stoploss"),
     ]
 
     for label, level, triggered, kind in checks:
@@ -109,8 +146,9 @@ def check_and_mark(price: float, day_high: float, day_low: float) -> list[dict]:
                 "qty":    state["qty"],
             })
             already_hit.add(label)
+            state_dirty = True
 
-    if newly_hit:
+    if state_dirty:
         state["levels_hit"] = list(already_hit)
         _save(state)
 
