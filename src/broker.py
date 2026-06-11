@@ -120,18 +120,28 @@ class KiteBroker:
             r.raise_for_status()
             logger.info("Kite auto_login step2 (TOTP) ok")
 
-            # Step 3: get request_token from login redirect
+            # Step 3: get request_token — follow up to 3 redirects to find it
             r = s.get(
                 f"https://kite.zerodha.com/connect/login?v=3&api_key={self.api_key}",
                 allow_redirects=False,
                 timeout=15,
             )
-            redirect_url = r.headers.get("location", "")
-            match = re.search(r"request_token=([^&\s]+)", redirect_url)
-            if not match:
-                logger.error("auto_login: could not extract request_token from redirect: %s", redirect_url)
+            request_token = None
+            for _ in range(3):
+                redirect_url = r.headers.get("location", "")
+                logger.info("auto_login redirect: %s", redirect_url)
+                match = re.search(r"request_token=([^&\s]+)", redirect_url)
+                if match:
+                    request_token = match.group(1)
+                    break
+                # Follow intermediate redirects (e.g. connect/finish)
+                if redirect_url and redirect_url.startswith("http"):
+                    r = s.get(redirect_url, allow_redirects=False, timeout=15)
+                else:
+                    break
+            if not request_token:
+                logger.error("auto_login: could not find request_token after redirects. Last URL: %s", redirect_url)
                 return False
-            request_token = match.group(1)
             logger.info("Kite auto_login got request_token")
 
             return self.complete_auth(request_token)
