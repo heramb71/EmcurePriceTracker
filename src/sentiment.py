@@ -58,21 +58,26 @@ def load_sentiment_model():
     if _model is not None:
         return _model
 
-    try:
-        from transformers import pipeline as hf_pipeline
+    import os
+    if os.getenv("FINBERT_MODEL_PATH", "").lower() == "skip":
+        logger.warning("FINBERT_MODEL_PATH=skip — using VADER.")
+    else:
+        try:
+            from transformers import pipeline as hf_pipeline
 
-        pipe = hf_pipeline(
-            "text-classification",
-            model="ProsusAI/finbert",
-            tokenizer="ProsusAI/finbert",
-            truncation=True,
-            max_length=512,
-        )
-        logger.warning("FinBERT loaded successfully.")
-        _model = _FinBERTWrapper(pipe)
-        return _model
-    except Exception:
-        logger.warning("FinBERT unavailable — falling back to VADER.")
+            model_path = os.getenv("FINBERT_MODEL_PATH") or "ProsusAI/finbert"
+            pipe = hf_pipeline(
+                "text-classification",
+                model=model_path,
+                tokenizer=model_path,
+                truncation=True,
+                max_length=512,
+            )
+            logger.warning("FinBERT loaded successfully.")
+            _model = _FinBERTWrapper(pipe)
+            return _model
+        except Exception:
+            logger.warning("FinBERT unavailable — falling back to VADER.")
 
     try:
         from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
