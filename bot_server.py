@@ -38,6 +38,8 @@ RISK_RUPEES       = float(os.getenv("RISK_RUPEES", "4500"))
 AUTHORIZED        = os.getenv("TWILIO_WHATSAPP_TO", "").replace("whatsapp:", "")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
 HEALTH_API_KEY    = os.getenv("HEALTH_API_KEY", "")
+KITE_API_KEY      = os.getenv("KITE_API_KEY", "")
+KITE_API_SECRET   = os.getenv("KITE_API_SECRET", "")
 
 
 def _live_price() -> float:
@@ -128,6 +130,7 @@ def _handle_status(parts: list[str]) -> str:
 
 
 def _handle_help(parts: list[str]) -> str:
+    auto = "✅ ON" if os.getenv("KITE_AUTO_TRADE") == "true" else "❌ OFF"
     return (
         f"📱 {TICKER} Trade Bot\n"
         f"\n"
@@ -135,10 +138,34 @@ def _handle_help(parts: list[str]) -> str:
         f"BUY <price> <qty>  with custom qty\n"
         f"SELL               close trade\n"
         f"STATUS             live P&L\n"
+        f"TOKEN <token>      complete Kite daily auth\n"
         f"HELP               this message\n"
         f"\n"
+        f"Auto-trading: {auto}\n"
         f"Example: BUY 1693"
     )
+
+
+def _handle_token(parts: list[str]) -> str:
+    """Complete Zerodha Kite daily auth by exchanging a request_token."""
+    if not KITE_API_KEY or not KITE_API_SECRET:
+        return "❌ KITE_API_KEY / KITE_API_SECRET not configured on server."
+    if len(parts) < 2:
+        return (
+            "Usage: TOKEN <request_token>\n\n"
+            "1. Open your Kite login URL (sent by the bot at 8:45 AM)\n"
+            "2. Log in with your Zerodha credentials\n"
+            "3. Copy the request_token from the redirect URL\n"
+            "4. Send: TOKEN <that_token>"
+        )
+    try:
+        from src.broker import KiteBroker
+        broker = KiteBroker(KITE_API_KEY, KITE_API_SECRET)
+        if broker.complete_auth(parts[1].strip()):
+            return "✅ Kite authenticated — auto-trading active for today."
+        return "❌ Auth failed. Check the request_token and try again."
+    except Exception as e:
+        return f"❌ Error: {e}"
 
 
 _HANDLERS = {
@@ -146,6 +173,7 @@ _HANDLERS = {
     "SELL":   _handle_sell,
     "STATUS": _handle_status,
     "HELP":   _handle_help,
+    "TOKEN":  _handle_token,
 }
 
 

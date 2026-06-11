@@ -25,6 +25,7 @@ load_dotenv()
 
 from src.sentiment import load_sentiment_model
 from src.holidays import is_market_holiday, format_holiday_alert
+from src.broker import KiteBroker
 from src.alerts import (
     send_alert,
     send_whatsapp_alert,
@@ -126,6 +127,7 @@ def _dispatch_alerts(
     risk_pct: float,
     tg_token: str,
     tg_chat_id: str,
+    broker: "KiteBroker | None" = None,
 ) -> None:
     """Send all scheduled and event-driven WhatsApp alerts (mirrors main.py logic)."""
     wa_ready = bool(wa_sid and wa_token and wa_from and wa_to)
@@ -351,12 +353,41 @@ def _dispatch_alerts(
             msg = format_position_open_alert(
                 ticker, payload["sizing"], payload["buy_signal"], capital, risk_pct
             )
+            if broker:
+                qty = payload["sizing"]["qty"]
+                order_id = broker.place_market_order(ticker, qty, "BUY")
+                if order_id:
+                    msg += f"\n📋 Order placed  id={order_id}"
+                    logger.warning("AUTO-TRADE BUY  qty=%d  order_id=%s", qty, order_id)
+                else:
+                    msg += "\n⚠️ ORDER FAILED — please execute manually!"
+                    logger.error("AUTO-TRADE BUY FAILED  qty=%d", qty)
+
         elif event_type == "partial":
             msg = format_partial_alert(
                 ticker, payload["position"], payload["price"], payload["pnl"]
             )
+            if broker:
+                qty = payload["position"]["qty"] - payload["position"]["qty_remaining"]
+                order_id = broker.place_market_order(ticker, qty, "SELL")
+                if order_id:
+                    msg += f"\n📋 Order placed  id={order_id}"
+                    logger.warning("AUTO-TRADE SELL (partial)  qty=%d  order_id=%s", qty, order_id)
+                else:
+                    msg += "\n⚠️ SELL ORDER FAILED — please execute manually!"
+                    logger.error("AUTO-TRADE SELL (partial) FAILED  qty=%d", qty)
+
         elif event_type == "close":
             msg = format_position_close_alert(ticker, payload["trade"], payload["reason"])
+            if broker:
+                qty = payload["trade"]["qty_closed_at_exit"]
+                order_id = broker.place_market_order(ticker, qty, "SELL")
+                if order_id:
+                    msg += f"\n📋 Order placed  id={order_id}"
+                    logger.warning("AUTO-TRADE SELL (close)  qty=%d  order_id=%s", qty, order_id)
+                else:
+                    msg += "\n⚠️ SELL ORDER FAILED — please execute manually!"
+                    logger.error("AUTO-TRADE SELL (close) FAILED  qty=%d", qty)
         else:
             continue
 
@@ -392,12 +423,68 @@ def main() -> None:
     wa_ready = bool(wa_sid and wa_token and wa_from and wa_to)
     logger.info("WhatsApp alerts: %s", "enabled" if wa_ready else "DISABLED — check .env")
 
+    # ── Kite auto-trading ────────────────────────────────────────────────────
+    broker: KiteBroker | None = None
+    if os.getenv("KITE_AUTO_TRADE", "false").lower() == "true":
+        kite_key    = os.getenv("KITE_API_KEY", "")
+        kite_secret = os.getenv("KITE_API_SECRET", "")
+        if not kite_key or not kite_secret:
+            logger.error("KITE_AUTO_TRADE=true but KITE_API_KEY/KITE_API_SECRET not set — auto-trading disabled")
+        else:
+            broker = KiteBroker(kite_key, kite_secret)
+            _kite_user    = os.getenv("KITE_USER_ID", "")
+            _kite_pass    = os.getenv("KITE_PASSWORD", "")
+            _kite_totp    = os.getenv("KITE_TOTP_SECRET", "")
+            if not broker.is_authenticated():
+                if _kite_user and _kite_pass and _kite_totp:
+                    logger.info("Kite not authenticated — attempting auto_login")
+                    if broker.auto_login(_kite_user, _kite_pass, _kite_totp):
+                        logger.warning("Kite auto_login succeeded — auto-trading ACTIVE")
+                        if wa_ready:
+                            send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to,
+                                f"✅ {ticker} auto-trading ACTIVE\n"
+                                f"Capital: ₹{capital:,.0f}  Risk: {risk_pct}%/trade")
+                    else:
+                        logger.error("Kite auto_login failed — sending login URL via WhatsApp")
+                        if wa_ready:
+                            send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to,
+                                f"🔐 Kite auth needed\n\n"
+                                f"1. Open: {broker.login_url()}\n"
+                                f"2. Log in with your Zerodha credentials\n"
+                                f"3. Copy request_token from redirect URL\n"
+                                f"4. Reply: TOKEN <request_token>")
+                        broker = None
+                else:
+                    logger.warning("Kite credentials not in .env — sending login URL via WhatsApp")
+                    if wa_ready:
+                        send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to,
+                            f"🔐 Kite auth needed for auto-trading\n\n"
+                            f"Open this link and log in:\n{broker.login_url()}\n\n"
+                            f"Then reply: TOKEN <request_token>")
+                    broker = None
+            else:
+                logger.warning("Kite already authenticated — auto-trading ACTIVE")
+                if wa_ready:
+                    send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to,
+                        f"✅ {ticker} auto-trading ACTIVE\n"
+                        f"Capital: ₹{capital:,.0f}  Risk: {risk_pct}%/trade")
+
     while True:
         now = _now_ist()
 
         # Pre-open briefing window is before market open — run outside market hours
         pre_open_window = now.hour == 9 and now.minute < 15
         if pre_open_window and not is_market_holiday(now.date()):
+            # Re-authenticate Kite at start of each trading day
+            if broker and not broker.is_authenticated():
+                _kite_user = os.getenv("KITE_USER_ID", "")
+                _kite_pass = os.getenv("KITE_PASSWORD", "")
+                _kite_totp = os.getenv("KITE_TOTP_SECRET", "")
+                if _kite_user and _kite_pass and _kite_totp:
+                    if not broker.auto_login(_kite_user, _kite_pass, _kite_totp):
+                        logger.error("Kite daily re-auth failed — auto-trading suspended")
+                        broker = None
+
             pre_key = f"pre_open_{now.date()}"
             if pre_key not in last_alerted:
                 data = _refresh(ticker)
@@ -406,6 +493,7 @@ def main() -> None:
                         ticker, data, now, last_alerted,
                         wa_sid, wa_token, wa_from, wa_to,
                         capital, risk_rupees, risk_pct, tg_token, tg_chat_id,
+                        broker=broker,
                     )
                 time.sleep(60)
                 continue
@@ -435,6 +523,7 @@ def main() -> None:
                 ticker, data, _now_ist(), last_alerted,
                 wa_sid, wa_token, wa_from, wa_to,
                 capital, risk_rupees, risk_pct, tg_token, tg_chat_id,
+                broker=broker,
             )
 
         elapsed   = (_now_ist() - started_at).total_seconds()

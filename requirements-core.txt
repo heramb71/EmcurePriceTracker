@@ -26,6 +26,10 @@ twilio>=9.0
 # WhatsApp bot server
 flask>=3.0
 
+# Zerodha Kite Connect (auto-trading)
+kiteconnect>=5.0
+pyotp>=2.9
+
 # Config
 python-dotenv>=1.0
 
