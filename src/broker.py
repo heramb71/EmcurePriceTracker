@@ -102,7 +102,11 @@ class KiteBroker:
                 timeout=15,
             )
             r.raise_for_status()
-            request_id = r.json()["data"]["request_id"]
+            resp1 = r.json()
+            if resp1.get("status") == "error":
+                logger.error("Kite login failed: %s", resp1.get("message"))
+                return False
+            request_id = resp1["data"]["request_id"]
             logger.info("Kite auto_login step1 ok, request_id=%s", request_id)
 
             # Step 2: TOTP 2FA
@@ -118,36 +122,36 @@ class KiteBroker:
                 timeout=15,
             )
             r.raise_for_status()
+            resp2 = r.json()
+            if resp2.get("status") == "error":
+                logger.error("Kite TOTP failed: %s", resp2.get("message"))
+                return False
             logger.info("Kite auto_login step2 (TOTP) ok")
 
-            # Step 3: get request_token — follow redirects and check response body
+            # Step 3: follow the full redirect chain to the app's redirect URL
+            # With allow_redirects=True the final r.url will be the callback URL
+            # containing request_token as a query param.
             r = s.get(
                 f"https://kite.zerodha.com/connect/login?v=3&api_key={self.api_key}",
-                allow_redirects=False,
+                allow_redirects=True,
                 timeout=15,
             )
             request_token = None
-            for _ in range(4):
-                # Check Location header first
-                redirect_url = r.headers.get("location", "")
-                logger.info("auto_login hop %d: status=%s location=%s", _, r.status_code, redirect_url[:120] if redirect_url else "(none)")
-                # Search both the redirect URL and the response body
-                for haystack in (redirect_url, r.text[:4000]):
-                    match = re.search(r"request_token=([A-Za-z0-9_\-]+)", haystack)
-                    if match:
-                        request_token = match.group(1)
-                        break
-                if request_token:
-                    break
-                if redirect_url and redirect_url.startswith("http"):
-                    r = s.get(redirect_url, allow_redirects=False, timeout=15)
-                elif r.status_code == 200:
-                    break  # Final page, no more redirects
-                else:
+            # Check the final URL and all intermediate redirect URLs
+            all_urls = [str(h.url) for h in r.history] + [str(r.url)]
+            logger.info("auto_login redirect chain: %s", " -> ".join(u[:80] for u in all_urls))
+            for url in all_urls:
+                match = re.search(r"request_token=([A-Za-z0-9_\-]+)", url)
+                if match:
+                    request_token = match.group(1)
                     break
             if not request_token:
-                logger.error("auto_login: request_token not found. Last status=%s body_snippet=%s",
-                             r.status_code, r.text[:300])
+                # Last resort: search response body
+                match = re.search(r"request_token=([A-Za-z0-9_\-]+)", r.text[:4000])
+                if match:
+                    request_token = match.group(1)
+            if not request_token:
+                logger.error("auto_login: request_token not found. Final URL=%s", r.url)
                 return False
             logger.info("Kite auto_login got request_token")
 
