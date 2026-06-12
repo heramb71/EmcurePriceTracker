@@ -128,30 +128,36 @@ class KiteBroker:
                 return False
             logger.info("Kite auto_login step2 (TOTP) ok")
 
-            # Step 3: follow the full redirect chain to the app's redirect URL
-            # With allow_redirects=True the final r.url will be the callback URL
-            # containing request_token as a query param.
-            r = s.get(
-                f"https://kite.zerodha.com/connect/login?v=3&api_key={self.api_key}",
-                allow_redirects=True,
-                timeout=15,
-            )
+            # Step 3: manually follow redirects, stopping as soon as request_token
+            # appears in a redirect URL — WITHOUT hitting the callback endpoint.
+            # Using allow_redirects=True would cause the requests session to GET
+            # the callback URL, which exchanges (and burns) the token on the server
+            # before we can use it locally.
+            from urllib.parse import urljoin
             request_token = None
-            # Check the final URL and all intermediate redirect URLs
-            all_urls = [str(h.url) for h in r.history] + [str(r.url)]
-            logger.info("auto_login redirect chain: %s", " -> ".join(u[:80] for u in all_urls))
-            for url in all_urls:
-                match = re.search(r"request_token=([A-Za-z0-9_\-]+)", url)
+            current_url = f"https://kite.zerodha.com/connect/login?v=3&api_key={self.api_key}"
+            visited: list[str] = []
+            for _ in range(10):
+                visited.append(current_url)
+                match = re.search(r"request_token=([A-Za-z0-9_\-]+)", current_url)
                 if match:
                     request_token = match.group(1)
                     break
+                r = s.get(current_url, allow_redirects=False, timeout=15)
+                location = r.headers.get("Location", "")
+                if location:
+                    next_url = urljoin(current_url, location)
+                    match = re.search(r"request_token=([A-Za-z0-9_\-]+)", next_url)
+                    if match:
+                        request_token = match.group(1)
+                        visited.append(next_url)
+                        break
+                    current_url = next_url
+                else:
+                    break
+            logger.info("auto_login redirect chain: %s", " -> ".join(u[:80] for u in visited))
             if not request_token:
-                # Last resort: search response body
-                match = re.search(r"request_token=([A-Za-z0-9_\-]+)", r.text[:4000])
-                if match:
-                    request_token = match.group(1)
-            if not request_token:
-                logger.error("auto_login: request_token not found. Final URL=%s", r.url)
+                logger.error("auto_login: request_token not found. Visited=%s", visited)
                 return False
             logger.info("Kite auto_login got request_token")
 
