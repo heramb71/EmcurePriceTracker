@@ -1,0 +1,24 @@
+[Unit]
+Description=Crypto BTC/ETH WhatsApp Trend Tracker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=emcure
+Group=emcure
+WorkingDirectory=/opt/emcure
+ExecStart=/opt/emcure/venv/bin/python3 /opt/emcure/crypto_headless.py
+Restart=always
+RestartSec=15
+EnvironmentFile=/opt/emcure/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=LOKY_MAX_CPU_COUNT=1
+Environment=OMP_NUM_THREADS=1
+# Optional: override the default 10-minute polling interval
+# Environment=CRYPTO_REFRESH_SECONDS=600
+StandardOutput=append:/var/log/emcure/crypto.log
+StandardError=append:/var/log/emcure/crypto.err
+
+[Install]
+WantedBy=multi-user.target
