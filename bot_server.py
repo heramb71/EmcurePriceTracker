@@ -28,6 +28,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from src.trade_manager import set_trade, clear_trade, get_trade, current_pnl
+from src.state import load_state
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
@@ -101,30 +102,53 @@ def _handle_sell(parts: list[str]) -> str:
 
 
 def _handle_status(parts: list[str]) -> str:
-    trade = get_trade()
-    if not trade:
-        return "No active trade.\n\nSend BUY <price> to record one."
-
     price = _live_price()
     if price <= 0:
         return "❌ Could not fetch live price right now."
 
-    p = current_pnl(price)
-    hit = p["levels_hit"]
+    lines = []
 
-    lines = [
-        f"📊 {TICKER}.NS — Live Position",
-        "",
-        f"Entry    ₹{p['entry']:,.2f} × {p['qty']} sh",
-        f"Current  ₹{price:,.2f}  ({p['pnl_per']:+.2f}/sh)",
-        f"P&L      ₹{p['pnl']:+,.0f}",
-        "",
-    ]
-    for label, level in [("T3", p["t3"]), ("T2", p["t2"]),
-                          ("T1", p["t1"]), ("SL", p["sl"])]:
-        tick = " ✅" if label in hit else ""
-        dist = round(level - price, 2)
-        lines.append(f"{label:<4} ₹{level:,.2f}  ({dist:+.2f}){tick}")
+    # ── Auto-trade position (Supertrend strategy) ─────────────────────────
+    auto_state = load_state()
+    auto_pos   = auto_state.get("position")
+    if auto_pos:
+        entry   = float(auto_pos["entry"])
+        qty     = int(auto_pos["qty_remaining"])
+        sl      = float(auto_pos["sl"])
+        t1      = float(auto_pos["t1"])
+        pnl     = round((price - entry) * qty, 0)
+        sign    = "+" if pnl >= 0 else ""
+        partial = " (partial booked ✅)" if auto_pos.get("partial_booked") else ""
+        lines += [
+            f"🤖 *Auto-Trade Position*{partial}",
+            f"Entry:   ₹{entry:,.2f} × {qty} shares",
+            f"Current: ₹{price:,.2f}",
+            f"P&L:     {sign}₹{pnl:,.0f}",
+            f"T1:      ₹{t1:,.2f}  ({t1 - price:+.0f})",
+            f"SL:      ₹{sl:,.2f}  ({sl - price:+.0f})",
+            "",
+        ]
+
+    # ── Manual trade position (BUY command) ───────────────────────────────
+    trade = get_trade()
+    if trade:
+        p   = current_pnl(price)
+        hit = p["levels_hit"]
+        lines += [
+            f"📱 *Manual Trade Position*",
+            f"Entry:   ₹{p['entry']:,.2f} × {p['qty']} shares",
+            f"Current: ₹{price:,.2f}  ({p['pnl_per']:+.2f}/sh)",
+            f"P&L:     ₹{p['pnl']:+,.0f}",
+            "",
+        ]
+        for label, level in [("T3", p["t3"]), ("T2", p["t2"]),
+                              ("T1", p["t1"]), ("SL", p["sl"])]:
+            tick = " ✅" if label in hit else ""
+            dist = round(level - price, 2)
+            lines.append(f"{label:<4} ₹{level:,.2f}  ({dist:+.2f}){tick}")
+
+    if not lines:
+        return "No active trades.\n\nSend BUY <price> to record a manual trade."
 
     return "\n".join(lines)
 
