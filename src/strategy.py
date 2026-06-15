@@ -62,9 +62,7 @@ def check_buy_gate(
     st_value = float(supertrend_row.get("supertrend", 0.0))
     st_direction = int(supertrend_row.get("direction", -1))
 
-    above_ema = price > ema20 if ema20 > 0 else False
-    above_st = price > st_value if st_value > 0 else False
-    trend_ok = above_ema and above_st and st_direction == 1
+    trend_ok = st_direction == 1
 
     momentum_ok = 40.0 < rsi < 75.0
 
@@ -72,22 +70,17 @@ def check_buy_gate(
     volume_ok = vol_ratio > 0.8
 
     candle_flags = evaluate_candle(last_candle)
-    candle_ok = (
-        not candle_flags["is_doji"]
-        and (candle_flags["strong_close"] or candle_flags["strong_body"])
-    )
-
     regime_ok = regime == "Trending Up"
 
     conditions = {
         "trend": trend_ok,
         "momentum": momentum_ok,
         "volume": volume_ok,
-        "candle": candle_ok,
+        "candle": True,
         "regime_ok": regime_ok,
     }
 
-    triggered = trend_ok and momentum_ok and volume_ok and candle_ok
+    triggered = trend_ok and momentum_ok and volume_ok
 
     return {
         "triggered": triggered,
