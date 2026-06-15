@@ -279,34 +279,42 @@ def format_pre_open_briefing(
         "```"
     )
 
+    confidence_label = (
+        "High — good setup today 👍" if pred["score"] >= 75 else
+        "Medium — decent chance"     if pred["score"] >= 55 else
+        "Low — be cautious"          if pred["score"] >= 40 else
+        "Very low — better to skip today"
+    )
+
     lines = [
-        f"📊 *{ticker}.NS — Pre-Open Briefing*",
-        f"📅 {now.strftime('%a %d %b %Y')}  ·  Opens 9:15 AM",
+        f"🌅 *Good morning! {ticker} Pre-Market Update*",
+        f"📅 {now.strftime('%a, %d %b %Y')}",
         "",
-        f"Close   ₹{price:,.2f}",
-        f"SMA7    ₹{sma7:,.2f}  (gap ₹{gap:+.0f})",
-        f"Trend   {trend_emoji} {trend_7d}",
-        f"ATR     ₹{atr:.0f}  ·  News {sent_emoji} {sentiment_label}",
+        f"Yesterday closed at ₹{price:,.2f}",
+        f"7-day average: ₹{sma7:,.2f}",
+        f"Stock is ₹{abs(gap):.0f} {'below' if gap < 0 else 'above'} its average",
+        f"Trend this week: {trend_emoji} {trend_7d}",
+        f"News mood: {sent_emoji} {sentiment_label}",
         "",
-        f"🎯 *Entry zones*",
-        f"BUY         ≤ ₹{buy_zone:,.2f}  (SMA7 − ₹20)",
-        f"STRONG BUY  ≤ ₹{strong_zone:,.2f}  (SMA7 − ₹25)",
+        f"🎯 *When to buy today:*",
+        f"Good entry if price drops to ₹{buy_zone:,.2f} or below",
+        f"Strong entry if price drops to ₹{strong_zone:,.2f} or below",
         "",
-        f"{tier_emoji} *Confidence {pred['score']}/100 — {pred['tier']}*",
-        bars,
-        f"*Rec: {pred['target_rec']}*",
+        f"{tier_emoji} *Today's confidence: {confidence_label}*",
+        f"Chance of reaching +₹10: {pred['reach_t1']:.0f}%",
+        f"Chance of reaching +₹20: {pred['reach_t2']:.0f}%",
+        f"Chance of reaching +₹25: {pred['reach_t3']:.0f}%",
+        f"Chance of stop loss hit: {pred['p_stop']:.0f}%",
     ]
 
     if qty > 0 and pred["ev"] != 0:
-        lines.append(f"Qty {qty} sh  ·  EV ₹{pred['ev']:+,.0f}")
+        ev_label = "expected profit" if pred["ev"] > 0 else "expected loss"
+        lines.append(f"Expected outcome per trade: ₹{pred['ev']:+,.0f} ({ev_label})")
 
     if pred["prior_loss_note"] and prior_losses > 0:
         lines += ["", f"⚠️ {pred['prior_loss_note']}"]
 
-    lines += ["", "🔍 *Why*"]
-    for label, detail in pred["factors"]:
-        lines.append(f"• {label}: {detail}")
-
+    lines.append(f"\n⏰ Market opens at 9:15 AM")
     return "\n".join(lines)
 
 
@@ -353,14 +361,15 @@ def format_post_open_briefing(
     )
 
     lines = [
-        f"{signal_emoji} *{ticker}.NS — 9:20 AM Update*",
+        f"{signal_emoji} *{ticker} — Market Open Update*",
+        f"⏰ 9:20 AM",
         "",
-        f"Open     ₹{open_price:,.2f}",
-        f"Current  ₹{current_price:,.2f}",
-        f"SMA7     ₹{sma7:,.2f}  (gap ₹{gap:+.0f})",
-        f"ORB      {orb_str}",
+        f"Opened at ₹{open_price:,.2f}",
+        f"Currently at ₹{current_price:,.2f}",
+        f"7-day average: ₹{sma7:,.2f}  (₹{abs(gap):.0f} {'below' if gap < 0 else 'above'})",
+        f"Early range: {orb_str}",
         "",
-        f"🚦 *{action}*  ·  {tier_emoji} {pred['score']}/100  ·  {pred['target_rec']}",
+        f"🚦 *Signal: {action}*",
     ]
 
     if action in ("BUY", "STRONG BUY") and qty > 0:
@@ -368,18 +377,15 @@ def format_post_open_briefing(
         sl    = round(entry - risk_rupees / qty, 2)
         lines += [
             "",
-            f"📋 *Trade Plan*  (₹{capital:,.0f})",
-            "```",
-            f"Qty    {qty} sh @ ₹{entry:,.2f}",
-            f"SL     ₹{sl:,.2f}  (-₹{round(entry - sl):.0f})",
-            f"T1     ₹{round(entry + 10):,.2f}  (+₹10)",
-            f"T2     ₹{round(entry + 20):,.2f}  (+₹20) primary",
-            f"T3     ₹{round(entry + 25):,.2f}  (+₹25) stretch",
-            f"EV     ₹{pred['ev']:+,.0f}",
-            "```",
+            f"📋 *If buying now ({qty} shares):*",
+            f"Buy at:       ₹{entry:,.2f}",
+            f"Sell half at: ₹{round(entry + 10):,.2f}  (profit ₹{10 * qty:,.0f})",
+            f"Final target: ₹{round(entry + 20):,.2f}  (profit ₹{20 * qty:,.0f})",
+            f"Stop loss:    ₹{sl:,.2f}  (max loss ₹{risk_rupees:,.0f})",
         ]
+    else:
+        lines.append(f"Stock is not in buy zone yet. Keep watching.")
 
-    lines += ["", "⏱ Next: 9:35 AM (ORB complete)"]
     return "\n".join(lines)
 
 
@@ -440,39 +446,53 @@ def format_eod_summary(
     )
 
     lines = [
-        f"📉 *{ticker}.NS — End of Day*",
-        f"📅 {now.strftime('%a %d %b %Y')}  ·  Market closed 3:30 PM",
+        f"🌆 *{ticker} — End of Day Summary*",
+        f"📅 {now.strftime('%a, %d %b %Y')}",
         "",
-        f"```",
-        f"Open   ₹{open_price:,.2f}",
-        f"High   ₹{high:,.2f}",
-        f"Low    ₹{low:,.2f}",
-        f"Close  ₹{close:,.2f}  {change_emoji} {change_pct:+.2f}%",
-        f"```",
-        f"SMA7   ₹{sma7:,.2f}  (gap ₹{gap:+.0f})",
-        f"ATR    ₹{atr:.0f}",
+        f"Opened:  ₹{open_price:,.2f}",
+        f"Highest: ₹{high:,.2f}",
+        f"Lowest:  ₹{low:,.2f}",
+        f"Closed:  ₹{close:,.2f}  {change_emoji} {change_pct:+.2f}%",
     ]
 
     if trades_today > 0:
         pnl_emoji = "✅" if day_pnl >= 0 else "❌"
         lines += [
             "",
-            f"{pnl_emoji} *Today's P&L: ₹{day_pnl:+,.0f}*  ({trades_today} trade{'s' if trades_today > 1 else ''})",
+            f"{pnl_emoji} *Today's trading P&L: ₹{day_pnl:+,.0f}*",
         ]
+
+    tomorrow_confidence = (
+        "High — looks like a good setup 👍" if pred["score"] >= 75 else
+        "Medium — worth watching"           if pred["score"] >= 55 else
+        "Low — may not trigger tomorrow"
+    )
 
     lines += [
         "",
-        f"── *Tomorrow's Setup* ──",
+        f"── *Tomorrow's Outlook* ──",
         f"{setup_signal}",
-        f"BUY zone       ≤ ₹{buy_zone:,.2f}",
-        f"STRONG BUY     ≤ ₹{strong_zone:,.2f}",
-        f"{tier_emoji} Confidence {pred['score']}/100  ·  {pred['tier']}",
+    ]
+
+    if gap <= -15:
+        lines += [
+            f"Stock is ₹{abs(gap):.0f} below its average — getting into buy territory.",
+            f"Watch for a buy if price stays below ₹{buy_zone:,.2f}",
+        ]
+    elif gap > 0:
+        lines += [
+            f"Stock is above its average — no buy setup yet.",
+            f"Wait for a pullback to ₹{buy_zone:,.2f} or lower.",
+        ]
+    else:
+        lines.append(f"Stock is near its average. Buy zone: ₹{buy_zone:,.2f}")
+
+    lines += [
         "",
-        f"T1 +₹10  {_pbar(pred['reach_t1'])} {pred['reach_t1']:.0f}%",
-        f"T2 +₹20  {_pbar(pred['reach_t2'])} {pred['reach_t2']:.0f}%",
-        f"T3 +₹25  {_pbar(pred['reach_t3'])} {pred['reach_t3']:.0f}%",
+        f"{tier_emoji} Confidence for tomorrow: {tomorrow_confidence}",
+        f"Chance of +₹10: {pred['reach_t1']:.0f}%  |  +₹20: {pred['reach_t2']:.0f}%  |  +₹25: {pred['reach_t3']:.0f}%",
         "",
-        f"⏰ Next briefing: tomorrow 9:00 AM",
+        f"⏰ Next update: tomorrow at 9:00 AM",
     ]
 
     return "\n".join(lines)
