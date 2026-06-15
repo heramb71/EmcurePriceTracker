@@ -1,0 +1,87 @@
+name: Deploy to Oracle Cloud
+
+# Manual-only — this never deploys automatically. You click "Run workflow",
+# then must select DEPLOY in the confirmation dropdown to proceed.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Confirm deploy to PRODUCTION (select DEPLOY)"
+        required: true
+        type: choice
+        options:
+          - "no"
+          - "DEPLOY"
+        default: "no"
+      services:
+        description: "Which services to restart"
+        required: true
+        type: choice
+        options:
+          - "all"
+          - "emcure-tracker"
+          - "emcure-bot"
+          - "crypto-tracker"
+        default: "all"
+
+# Never run two deploys at once.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Optional approval gate: protect this Environment with required reviewers
+    # in repo Settings → Environments → production to require a human Approve.
+    environment: production
+    steps:
+      - name: Confirmation gate
+        if: ${{ inputs.confirm != 'DEPLOY' }}
+        run: |
+          echo "::error::Deploy not confirmed — re-run and select 'DEPLOY'."
+          exit 1
+
+      - name: Resolve services to restart
+        id: svc
+        run: |
+          if [ "${{ inputs.services }}" = "all" ]; then
+            echo "list=emcure-tracker crypto-tracker emcure-bot" >> "$GITHUB_OUTPUT"
+          else
+            echo "list=${{ inputs.services }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy over SSH (git pull + restart)
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SERVICES: ${{ steps.svc.outputs.list }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_PRIVATE_KEY:-}" ] || [ -z "${SSH_HOST:-}" ] || [ -z "${SSH_USER:-}" ]; then
+            echo "::error::Missing required secrets: SSH_PRIVATE_KEY, SSH_HOST, SSH_USER."
+            exit 1
+          fi
+          PORT="${SSH_PORT:-22}"
+
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -p "$PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          echo "Deploying to $SSH_USER@$SSH_HOST:$PORT — restarting: $SERVICES"
+          ssh -i ~/.ssh/id_deploy -p "$PORT" \
+            -o StrictHostKeyChecking=accept-new \
+            "$SSH_USER@$SSH_HOST" \
+            "set -e; \
+             cd /opt/emcure && \
+             sudo git pull --ff-only && \
+             sudo systemctl restart $SERVICES && \
+             sleep 2 && \
+             systemctl is-active $SERVICES"
+
+      - name: Cleanup key
+        if: always()
+        run: rm -f ~/.ssh/id_deploy
