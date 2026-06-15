@@ -108,15 +108,15 @@ def compute_position_size(
     risk_pct: float,
     entry: float,
     atr: float,
-    atr_mult: float = 2.0,
-    rr: float = 2.0,
+    atr_mult: float = 0.5,
+    rr: float = 1.0,
 ) -> Optional[dict]:
     """
-    Compute position sizing per the spec:
-      - Stop = entry − atr_mult × ATR
+    Compute position sizing for intraday trades:
+      - Stop = entry − atr_mult × ATR  (0.5× ATR ≈ ₹30 stop for EMCURE)
       - Risk amount = capital × risk_pct%
       - Qty = floor(risk amount / risk per share)
-      - T1  = entry + rr × risk per share  (default 1:2 RR)
+      - T1  = entry + rr × risk per share  (1:1 RR keeps T1 realistic intraday)
     Returns None when inputs are invalid.
     """
     if entry <= 0 or atr <= 0 or capital <= 0 or risk_pct <= 0:
