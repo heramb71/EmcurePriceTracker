@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -51,6 +52,8 @@ from crypto.signals import compute_crypto_signal, is_alert_worthy
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
+    stream=sys.stdout,
+    force=True,
 )
 logger = logging.getLogger("crypto_headless")
 
