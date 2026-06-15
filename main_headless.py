@@ -172,6 +172,8 @@ def _dispatch_alerts(
                 prior_losses    = data.get("prior_losses", 0),
                 sentiment_label = data.get("news_sent_label", "Neutral"),
                 sentiment_score = data.get("news_sent_score", 0.0),
+                indicators      = data.get("indicators", {}),
+                score_result    = data.get("score_result") or {},
                 now             = now_t,
             )
             _wa(msg)
@@ -194,6 +196,8 @@ def _dispatch_alerts(
                 capital       = capital,
                 risk_rupees   = risk_rupees,
                 prior_losses  = data.get("prior_losses", 0),
+                indicators    = data.get("indicators", {}),
+                score_result  = data.get("score_result") or {},
                 now           = now_t,
             )
             _wa(msg)
@@ -220,6 +224,8 @@ def _dispatch_alerts(
                 prior_losses = data.get("prior_losses", 0),
                 day_pnl      = 0.0,
                 trades_today = 0,
+                indicators   = data.get("indicators", {}),
+                score_result = data.get("score_result") or {},
                 now          = now_t,
             )
             _wa(msg)
