@@ -11,6 +11,7 @@ For a systemd deployment, see deploy/emcure_price_tracker.service.
 
 import argparse
 import os
+import sys
 import time
 import logging
 from argparse import ArgumentParser
@@ -47,6 +48,7 @@ from main import _refresh
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
+    stream=sys.stdout,
 )
 logger = logging.getLogger("main_headless")
 
