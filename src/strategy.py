@@ -66,15 +66,14 @@ def check_buy_gate(
     above_st = price > st_value if st_value > 0 else False
     trend_ok = above_ema and above_st and st_direction == 1
 
-    momentum_ok = 55.0 < rsi < 75.0
+    momentum_ok = 40.0 < rsi < 75.0
 
     vol_ratio = (volume / avg_volume) if avg_volume > 0 else 0.0
-    volume_ok = vol_ratio > 1.0
+    volume_ok = vol_ratio > 0.8
 
     candle_flags = evaluate_candle(last_candle)
     candle_ok = (
-        candle_flags["is_bullish"]
-        and not candle_flags["is_doji"]
+        not candle_flags["is_doji"]
         and (candle_flags["strong_close"] or candle_flags["strong_body"])
     )
 
