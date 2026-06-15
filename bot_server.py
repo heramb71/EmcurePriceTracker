@@ -166,12 +166,40 @@ def _handle_help(parts: list[str]) -> str:
         f"BUY <price> <qty>  with custom qty\n"
         f"SELL               close trade\n"
         f"STATUS             live P&L\n"
+        f"CRYPTO             BTC/ETH summary\n"
         f"TOKEN <token>      complete Kite daily auth\n"
         f"HELP               this message\n"
         f"\n"
         f"Auto-trading: {auto}\n"
         f"Example: BUY 1693"
     )
+
+
+def _handle_crypto(parts: list[str]) -> str:
+    """On-demand BTC/ETH summary (same read as the 8 AM / 8 PM briefings)."""
+    try:
+        from datetime import datetime, timezone, timedelta
+        from crypto.data import fetch_crypto_daily, fetch_crypto_quote, fetch_usd_inr
+        from crypto.signals import compute_crypto_signal
+        from crypto.messages import format_evening_summary
+
+        ist = timezone(timedelta(hours=5, minutes=30))
+        usd = fetch_usd_inr()
+
+        def _asset(sym: str):
+            df = fetch_crypto_daily(sym, days=250)
+            q  = fetch_crypto_quote(sym, usd)
+            if df is None or len(df) < 30 or q is None:
+                return None, None
+            return q, compute_crypto_signal(df, q)
+
+        bq, bs = _asset("BTC-USD")
+        eq, es = _asset("ETH-USD")
+        if not (bq and bs and eq and es):
+            return "❌ Could not fetch crypto data right now. Try again shortly."
+        return format_evening_summary(bq, bs, eq, es, datetime.now(ist))
+    except Exception as e:
+        return f"❌ Crypto error: {e}"
 
 
 def _handle_token(parts: list[str]) -> str:
@@ -200,6 +228,7 @@ _HANDLERS = {
     "BUY":    _handle_buy,
     "SELL":   _handle_sell,
     "STATUS": _handle_status,
+    "CRYPTO": _handle_crypto,
     "HELP":   _handle_help,
     "TOKEN":  _handle_token,
 }
