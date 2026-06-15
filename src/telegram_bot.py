@@ -21,6 +21,33 @@ logger = logging.getLogger(__name__)
 _API = "https://api.telegram.org/bot{token}/{method}"
 _POLL_TIMEOUT_S = 30
 
+# Command menu shown in Telegram's "/" autocomplete. Keep in sync with the
+# _HANDLERS registry in bot_server.py. (command must be lowercase a-z0-9_.)
+_COMMAND_MENU = [
+    {"command": "status", "description": "Live P&L and open position"},
+    {"command": "crypto", "description": "BTC/ETH market summary"},
+    {"command": "buy",    "description": "Record entry — /buy <price> [qty]"},
+    {"command": "sell",   "description": "Close the recorded trade"},
+    {"command": "help",   "description": "Show all commands"},
+    {"command": "token",  "description": "Kite daily auth — /token <request_token>"},
+]
+
+
+def set_commands(token: str) -> bool:
+    """Register the command menu so Telegram shows '/' autocomplete."""
+    try:
+        resp = requests.post(
+            _API.format(token=token, method="setMyCommands"),
+            json={"commands": _COMMAND_MENU},
+            timeout=10,
+        )
+        ok = resp.status_code == 200
+        logger.warning("setMyCommands %s", "OK" if ok else f"failed ({resp.status_code})")
+        return ok
+    except Exception:
+        logger.exception("setMyCommands failed")
+        return False
+
 
 def _get_updates(token: str, offset: int) -> list[dict]:
     try:
@@ -51,6 +78,7 @@ def run_command_bot(
         logger.warning("Telegram command bot not started — no token")
         return
 
+    set_commands(token)   # register the "/" autocomplete menu
     logger.warning("Telegram command bot started (chat_id=%s)", chat_id or "any")
     offset = 0
     while True:
