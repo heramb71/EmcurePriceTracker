@@ -179,12 +179,12 @@ def _log_state(
     btc_quote: dict, btc_sig: dict, eth_quote: dict, eth_sig: dict
 ) -> None:
     logger.info(
-        "BTC ₹%,.0f | %s | RSI %.0f | score %.2f",
-        btc_quote["price_inr"], btc_sig["signal"], btc_sig["rsi"], btc_sig["score"],
+        "BTC ₹%s | %s | RSI %.0f | score %.2f",
+        f"{btc_quote['price_inr']:,.0f}", btc_sig["signal"], btc_sig["rsi"], btc_sig["score"],
     )
     logger.info(
-        "ETH ₹%,.0f | %s | RSI %.0f | score %.2f",
-        eth_quote["price_inr"], eth_sig["signal"], eth_sig["rsi"], eth_sig["score"],
+        "ETH ₹%s | %s | RSI %.0f | score %.2f",
+        f"{eth_quote['price_inr']:,.0f}", eth_sig["signal"], eth_sig["rsi"], eth_sig["score"],
     )
 
 
