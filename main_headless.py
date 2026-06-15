@@ -367,24 +367,17 @@ def _dispatch_alerts(
             last_alerted[signal] = datetime.now(_IST)
             logger.info("Score-based alert sent: %s", signal)
 
-    # ── Supertrend strategy events (open / partial / close) ──────────────────
+    # ── Supertrend strategy events ────────────────────────────────────────────
+    # Orders are now placed AND confirmed inside _refresh() before the state is
+    # mutated, so these events already reflect real, filled trades. This loop
+    # only notifies; it never places orders.
     for event_type, payload in data.get("strategy_events", []):
         if event_type == "open":
             msg = format_position_open_alert(
                 ticker, payload["sizing"], payload["buy_signal"], capital, risk_pct
             )
             if broker:
-                qty = payload["sizing"]["qty"]
-                order_id = broker.place_market_order(ticker, qty, "BUY")
-                if order_id:
-                    msg += f"\n📋 Order placed  id={order_id}"
-                    logger.warning("AUTO-TRADE BUY  qty=%d  order_id=%s", qty, order_id)
-                else:
-                    msg += "\n⚠️ Order failed — rolling back position state."
-                    logger.error("AUTO-TRADE BUY FAILED  qty=%d — rolling back state", qty)
-                    state = load_state()
-                    state["position"] = None
-                    save_state(state)
+                msg += "\n✅ Order filled and confirmed."
 
         elif event_type == "partial":
             reason = payload.get("reason", "t1_hit")
@@ -392,32 +385,67 @@ def _dispatch_alerts(
                 ticker, payload["position"], payload["price"], payload["pnl"], reason
             )
             if broker:
-                qty = payload["position"]["qty"] - payload["position"]["qty_remaining"]
-                order_id = broker.place_market_order(ticker, qty, "SELL")
-                if order_id:
-                    msg += f"\n📋 Order placed  id={order_id}"
-                    logger.warning("AUTO-TRADE SELL (%s)  qty=%d  order_id=%s", reason, qty, order_id)
-                else:
-                    msg += "\n⚠️ SELL ORDER FAILED — please execute manually!"
-                    logger.error("AUTO-TRADE SELL (%s) FAILED  qty=%d", reason, qty)
+                msg += "\n✅ Sell order filled and confirmed."
 
         elif event_type == "close":
             msg = format_position_close_alert(ticker, payload["trade"], payload["reason"])
             if broker:
-                qty = payload["trade"]["qty_closed_at_exit"]
-                order_id = broker.place_market_order(ticker, qty, "SELL")
-                if order_id:
-                    msg += f"\n📋 Order placed  id={order_id}"
-                    logger.warning("AUTO-TRADE SELL (close)  qty=%d  order_id=%s", qty, order_id)
-                else:
-                    msg += "\n⚠️ SELL ORDER FAILED — please execute manually!"
-                    logger.error("AUTO-TRADE SELL (close) FAILED  qty=%d", qty)
+                msg += "\n✅ Sell order filled and confirmed."
+
+        elif event_type == "open_failed":
+            msg = (
+                f"⚠️ *Auto-trade BUY not placed — {ticker}*\n\n"
+                f"Tried to buy {payload['qty']} shares but the order did not fill "
+                f"(rejected, cancelled, or timed out). No position was opened. "
+                f"Check Zerodha and your funds."
+            )
+            logger.error("AUTO-TRADE BUY did not fill — qty=%d", payload["qty"])
+
+        elif event_type == "exit_failed":
+            msg = (
+                f"🚨 *Auto-trade SELL FAILED — {ticker}*\n\n"
+                f"Tried to sell {payload['qty']} shares ({payload['reason']}) but the "
+                f"order did not fill. Your position is STILL OPEN — please exit "
+                f"manually in Zerodha now."
+            )
+            logger.error(
+                "AUTO-TRADE SELL did not fill — qty=%d reason=%s",
+                payload["qty"], payload["reason"],
+            )
         else:
             continue
 
         _wa(msg)
         _tg(msg)
         logger.info("Strategy event alert sent: %s", event_type)
+
+
+def _reconcile_on_startup(
+    broker, ticker, wa_sid, wa_token, wa_from, wa_to, wa_ready
+) -> None:
+    """Compare bot trade state against the broker's actual holdings on startup."""
+    state    = load_state()
+    pos      = state.get("position") or {}
+    bot_qty  = int(pos.get("qty_remaining", 0)) if pos else 0
+    held     = broker.held_qty(ticker)
+
+    if held is None:
+        logger.warning("Reconcile: could not query broker holdings — skipping check")
+        return
+
+    if bot_qty == held:
+        logger.info("Reconcile OK: bot=%d  broker=%d shares", bot_qty, held)
+        return
+
+    logger.error("RECONCILE MISMATCH: bot=%d  broker=%d shares", bot_qty, held)
+    if wa_ready:
+        send_whatsapp_alert(
+            wa_sid, wa_token, wa_from, wa_to,
+            f"⚠️ *Position mismatch — {ticker}*\n\n"
+            f"Bot thinks it holds {bot_qty} shares, but Zerodha shows {held}.\n"
+            f"The bot will keep using its own record. If that's wrong, fix it "
+            f"before the next signal (e.g. send SELL or clear state).",
+        )
 
 
 def main() -> None:
@@ -493,6 +521,12 @@ def main() -> None:
                         f"✅ {ticker} auto-trading ACTIVE\n"
                         f"Capital: ₹{capital:,.0f}  Risk: {risk_pct}%/trade")
 
+    # ── Startup reconciliation ─────────────────────────────────────────────────
+    # Detect divergence between what the bot believes it holds (strategy_state)
+    # and what Zerodha actually shows, before the loop starts trading on it.
+    if broker:
+        _reconcile_on_startup(broker, ticker, wa_sid, wa_token, wa_from, wa_to, wa_ready)
+
     while True:
         now = _now_ist()
 
@@ -527,7 +561,7 @@ def main() -> None:
             continue
 
         started_at = _now_ist()
-        data = _refresh(ticker)
+        data = _refresh(ticker, broker=broker)
 
         if not data:
             logger.warning("No market data returned, retrying in %ss...", refresh_seconds)
