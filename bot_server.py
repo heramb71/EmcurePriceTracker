@@ -36,8 +36,10 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 TICKER            = os.getenv("TICKER", "EMCURE")
 CAPITAL           = float(os.getenv("CAPITAL", "100000"))
 RISK_RUPEES       = float(os.getenv("RISK_RUPEES", "4500"))
-AUTHORIZED        = os.getenv("TWILIO_WHATSAPP_TO", "").replace("whatsapp:", "")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+AUTHORIZED           = os.getenv("TWILIO_WHATSAPP_TO", "").replace("whatsapp:", "")
+TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN    = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "")
 HEALTH_API_KEY    = os.getenv("HEALTH_API_KEY", "")
 KITE_API_KEY      = os.getenv("KITE_API_KEY", "")
 KITE_API_SECRET   = os.getenv("KITE_API_SECRET", "")
@@ -229,9 +231,20 @@ def whatsapp():
     else:
         reply = f"Unknown command: {body}\nSend HELP for commands."
 
+    # Reply via the Twilio REST API — the same path as outbound alerts, which
+    # deliver reliably. TwiML webhook responses were silently not delivered in
+    # the sandbox, so we send the reply directly and ack the webhook with 204.
+    if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_WHATSAPP_FROM:
+        from src.alerts import send_whatsapp_alert
+        if send_whatsapp_alert(
+            TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM, from_num, reply
+        ):
+            return Response("", status=204)
+
+    # Fallback: return TwiML with the correct XML content-type.
     resp = MessagingResponse()
     resp.message(reply)
-    return str(resp)
+    return Response(str(resp), mimetype="application/xml")
 
 
 @app.route("/kite_callback")
