@@ -129,6 +129,7 @@ def compute_position_size(
 
     risk_amount = capital * (risk_pct / 100.0)
     qty = int(risk_amount // risk_per_share)
+    qty = min(qty, int(capital // entry))  # never exceed available capital
     if qty <= 0:
         return None
 
