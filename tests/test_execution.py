@@ -17,9 +17,17 @@ _SIZING = {
 
 class _FillBroker:
     """Broker stub that always reports a complete fill at a fixed price."""
-    def __init__(self, fill_price=1702.5):
+    def __init__(self, fill_price=1702.5, held=0, funds=1_000_000.0):
         self.fill_price = fill_price
+        self._held = held
+        self._funds = funds
         self.orders = []
+
+    def held_qty(self, ticker):
+        return self._held
+
+    def available_funds(self):
+        return self._funds
 
     def place_order_and_confirm(self, ticker, qty, side):
         self.orders.append((side, qty))
@@ -29,8 +37,16 @@ class _FillBroker:
 
 class _FailBroker:
     """Broker stub whose orders never fill."""
-    def __init__(self):
+    def __init__(self, held=0, funds=1_000_000.0):
+        self._held = held
+        self._funds = funds
         self.orders = []
+
+    def held_qty(self, ticker):
+        return self._held
+
+    def available_funds(self):
+        return self._funds
 
     def place_order_and_confirm(self, ticker, qty, side):
         self.orders.append((side, qty))
@@ -104,6 +120,34 @@ def test_halted_does_not_open_position():
     # Assert
     assert state["position"] is None
     assert events == []
+
+
+def test_insufficient_funds_skips_buy():
+    # Arrange — broker reports less cash than the trade needs
+    state = _default_state()
+    broker = _FillBroker(funds=1000.0)  # need 8500
+    # Act
+    state, events = main._execute_strategy(
+        state, "EMCURE", _QUOTE, _ST, _BUY, _SIZING, 30.0, halted=False, broker=broker
+    )
+    # Assert
+    assert state["position"] is None
+    assert events[0][0] == "insufficient_funds"
+    assert broker.orders == []  # no order attempted
+
+
+def test_untracked_holdings_skip_buy():
+    # Arrange — bot is flat but broker already holds shares
+    state = _default_state()
+    broker = _FillBroker(held=10)
+    # Act
+    state, events = main._execute_strategy(
+        state, "EMCURE", _QUOTE, _ST, _BUY, _SIZING, 30.0, halted=False, broker=broker
+    )
+    # Assert
+    assert state["position"] is None
+    assert events[0][0] == "reconcile_warn"
+    assert broker.orders == []  # no order attempted
 
 
 def test_sizing_at_fill_keeps_filled_qty():

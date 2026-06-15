@@ -10,6 +10,11 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Limit-order price offset from LTP: BUY slightly above, SELL slightly below,
+# so the order fills promptly without a true market order (which Kite rejects
+# without market protection).
+DEFAULT_SLIPPAGE_PCT = 0.1
+
 # Shared token file — written by bot_server (TOKEN cmd) or auto_login, read by headless
 _TOKEN_FILE = Path("/opt/emcure/kite_token.json")
 
@@ -222,6 +227,21 @@ class KiteBroker:
             logger.exception("held_qty failed for %s", symbol)
             return None
 
+    def available_funds(self) -> Optional[float]:
+        """
+        Live available equity cash for placing CNC orders.
+        Returns None when the broker could not be queried so callers can
+        distinguish "no funds" (0.0) from "could not check" (None).
+        """
+        try:
+            margins = self.kite.margins()
+            equity  = margins.get("equity", {})
+            available = equity.get("available", {})
+            return float(available.get("live_balance", 0.0))
+        except Exception:
+            logger.exception("available_funds failed")
+            return None
+
     # ── Order placement ──────────────────────────────────────────────────────
 
     # Default fill-confirmation window. The main loop refreshes every ~300s,
@@ -230,7 +250,7 @@ class KiteBroker:
     FILL_POLL_S    = 3
 
     def _place_limit_order(
-        self, ticker: str, qty: int, side: str, slippage_pct: float = 0.1
+        self, ticker: str, qty: int, side: str, slippage_pct: float = DEFAULT_SLIPPAGE_PCT
     ) -> Optional[str]:
         """
         Place an NSE delivery (CNC) limit order with a small slippage buffer.
@@ -340,7 +360,7 @@ class KiteBroker:
         return {"order_id": order_id, "status": "TIMEOUT", "fill_price": 0.0, "filled_qty": 0}
 
     def place_order_and_confirm(
-        self, ticker: str, qty: int, side: str, slippage_pct: float = 0.1
+        self, ticker: str, qty: int, side: str, slippage_pct: float = DEFAULT_SLIPPAGE_PCT
     ) -> Optional[dict]:
         """
         Place an order AND wait for confirmation of the fill before returning.

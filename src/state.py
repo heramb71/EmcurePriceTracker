@@ -10,6 +10,9 @@ logger = logging.getLogger(__name__)
 
 STATE_FILE = Path("strategy_state.json")
 
+# Each target (T1/T2/T3) books this fraction of the remaining position.
+PARTIAL_DENOM = 3
+
 
 def _default_state() -> dict[str, Any]:
     return {
@@ -89,7 +92,7 @@ def book_partial(
     if not pos:
         return state, 0.0
 
-    third = max(1, pos["qty_remaining"] // 3)
+    third = max(1, pos["qty_remaining"] // PARTIAL_DENOM)
     pnl   = round((exit_price - pos["entry"]) * third, 2)
 
     pos["qty_remaining"] -= third

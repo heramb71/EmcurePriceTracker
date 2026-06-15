@@ -108,6 +108,7 @@ from src.state import (
     book_partial,
     close_position,
     check_circuit_breaker,
+    PARTIAL_DENOM,
 )
 
 
@@ -152,7 +153,7 @@ def _execute_strategy(
             return state, events
 
         if action["action"] == "exit_partial":
-            qty_to_sell = max(1, int(position["qty_remaining"]) // 3)
+            qty_to_sell = max(1, int(position["qty_remaining"]) // PARTIAL_DENOM)
             exit_price  = action["price"]
             if broker:
                 fill = broker.place_order_and_confirm(ticker, qty_to_sell, "SELL")
@@ -190,6 +191,21 @@ def _execute_strategy(
     elif not halted and buy_signal["triggered"] and sizing:
         fill_sizing = sizing
         if broker:
+            # Idempotency: the bot thinks it is flat — confirm the broker agrees
+            # before buying, so a missed save / restart can't double a position.
+            held = broker.held_qty(ticker)
+            if held:
+                events.append(("reconcile_warn", {"held": held}))
+                return state, events
+
+            # Funds guard: CNC needs full cash; never place an order we can't pay for.
+            funds = broker.available_funds()
+            if funds is not None and funds < sizing["capital_used"]:
+                events.append(("insufficient_funds", {
+                    "need": sizing["capital_used"], "have": funds, "qty": sizing["qty"],
+                }))
+                return state, events
+
             fill = broker.place_order_and_confirm(ticker, sizing["qty"], "BUY")
             if not fill:
                 events.append(("open_failed", {

@@ -16,6 +16,7 @@ import time
 import logging
 from argparse import ArgumentParser
 from datetime import datetime, time as dtime, timedelta, timezone
+from pathlib import Path
 
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -23,6 +24,24 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _warn_if_env_world_readable() -> None:
+    """The .env holds the Kite password + TOTP secret (a full 2FA bypass).
+    Warn loudly if it is readable by group/others so it gets locked down."""
+    env_path = Path(".env")
+    try:
+        if not env_path.exists():
+            return
+        mode = env_path.stat().st_mode
+        if mode & 0o077:
+            logging.getLogger(__name__).warning(
+                ".env is group/world-readable (mode %o) — it holds Kite credentials. "
+                "Run: chmod 600 .env", mode & 0o777,
+            )
+    except Exception:
+        pass
+
 
 from src.sentiment import load_sentiment_model
 from src.holidays import is_market_holiday, format_holiday_alert
@@ -412,6 +431,27 @@ def _dispatch_alerts(
                 "AUTO-TRADE SELL did not fill — qty=%d reason=%s",
                 payload["qty"], payload["reason"],
             )
+
+        elif event_type == "insufficient_funds":
+            msg = (
+                f"💸 *Auto-trade BUY skipped — {ticker}*\n\n"
+                f"Signal fired but you have ₹{payload['have']:,.0f} available and the "
+                f"trade needs ₹{payload['need']:,.0f} ({payload['qty']} shares). "
+                f"Add funds or lower CAPITAL."
+            )
+            logger.warning(
+                "AUTO-TRADE BUY skipped — need ₹%.0f have ₹%.0f",
+                payload["need"], payload["have"],
+            )
+
+        elif event_type == "reconcile_warn":
+            msg = (
+                f"⚠️ *Auto-trade BUY skipped — {ticker}*\n\n"
+                f"A buy signal fired but Zerodha already shows {payload['held']} shares "
+                f"held that the bot wasn't tracking. No new order placed. Check your "
+                f"positions — fix the mismatch before the next signal."
+            )
+            logger.error("AUTO-TRADE BUY skipped — broker holds %d untracked", payload["held"])
         else:
             continue
 
@@ -459,6 +499,7 @@ def main() -> None:
     logger.info("Starting EmcurePriceTracker headless service for %s", ticker)
     logger.info("Refresh interval: %ss", refresh_seconds)
 
+    _warn_if_env_world_readable()
     load_sentiment_model()
     last_alerted: dict = {}
 
@@ -533,15 +574,33 @@ def main() -> None:
         # Pre-open briefing window is before market open — run outside market hours
         pre_open_window = now.hour == 9 and now.minute < 15
         if pre_open_window and not is_market_holiday(now.date()):
-            # Re-authenticate Kite at start of each trading day
-            if broker and not broker.is_authenticated():
+            # Re-authenticate Kite at start of each trading day, with a once-per-day
+            # heartbeat so a silent auth failure can't leave trading dead unnoticed.
+            auth_key = f"auth_{now.date()}"
+            if broker and auth_key not in last_alerted:
                 _kite_user = os.getenv("KITE_USER_ID", "")
                 _kite_pass = os.getenv("KITE_PASSWORD", "")
                 _kite_totp = os.getenv("KITE_TOTP_SECRET", "")
-                if _kite_user and _kite_pass and _kite_totp:
-                    if not broker.auto_login(_kite_user, _kite_pass, _kite_totp):
-                        logger.error("Kite daily re-auth failed — auto-trading suspended")
-                        broker = None
+                authed = broker.is_authenticated()
+                if not authed and _kite_user and _kite_pass and _kite_totp:
+                    authed = broker.auto_login(_kite_user, _kite_pass, _kite_totp)
+
+                if authed:
+                    logger.warning("Kite auth OK for %s — auto-trading ACTIVE", now.date())
+                    if wa_ready:
+                        send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to,
+                            f"✅ {ticker} auto-trading ACTIVE today\n"
+                            f"Capital: ₹{capital:,.0f}  Risk: {risk_pct}%/trade")
+                else:
+                    logger.error("Kite daily re-auth FAILED — auto-trading suspended")
+                    if wa_ready:
+                        send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to,
+                            f"🚨 {ticker} auto-trading is DOWN today\n\n"
+                            f"Kite login failed — no orders will be placed. "
+                            f"Reply TOKEN <request_token> after logging in:\n"
+                            f"{broker.login_url()}")
+                    broker = None
+                last_alerted[auth_key] = now
 
             pre_key = f"pre_open_{now.date()}"
             if pre_key not in last_alerted:
