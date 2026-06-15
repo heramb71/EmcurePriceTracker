@@ -40,7 +40,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from src.alerts import send_whatsapp_alert
+from src.alerts import send_whatsapp_alert, send_alert
 from crypto.data import fetch_crypto_daily, fetch_crypto_quote, fetch_usd_inr
 from crypto.messages import (
     format_evening_summary,
@@ -99,14 +99,20 @@ def main() -> None:
     wa_token = os.getenv("TWILIO_AUTH_TOKEN", "")
     wa_from  = os.getenv("TWILIO_WHATSAPP_FROM", "")
     wa_to    = os.getenv("TWILIO_WHATSAPP_TO", "")
+    tg_token   = os.getenv("TELEGRAM_TOKEN", "")
+    tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
 
     wa_ready = bool(wa_sid and wa_token and wa_from and wa_to)
-    if not wa_ready:
-        logger.error("WhatsApp credentials missing — check TWILIO_* in .env")
+    tg_ready = bool(tg_token and tg_chat_id)
+    if not (wa_ready or tg_ready):
+        logger.error("No alert channel configured — set TWILIO_* and/or TELEGRAM_* in .env")
 
     def _wa(msg: str) -> None:
+        """Fan out to every configured channel: WhatsApp (50/day cap) + Telegram."""
         if wa_ready:
             send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to, msg)
+        if tg_ready:
+            send_alert(tg_token, tg_chat_id, msg)
 
     last_alerted: dict = {}
     logger.info("Crypto tracker started. Refresh every %ds.", _REFRESH_SECONDS)

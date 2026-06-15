@@ -152,22 +152,28 @@ def _dispatch_alerts(
     tg_chat_id: str,
     broker: "KiteBroker | None" = None,
 ) -> None:
-    """Send all scheduled and event-driven WhatsApp alerts (mirrors main.py logic)."""
-    wa_ready = bool(wa_sid and wa_token and wa_from and wa_to)
-
-    def _wa(msg: str) -> None:
-        if wa_ready:
-            send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to, msg)
+    """Send all scheduled and event-driven alerts to every configured channel."""
+    wa_ready     = bool(wa_sid and wa_token and wa_from and wa_to)
+    tg_ready     = bool(tg_token and tg_chat_id)
+    notify_ready = wa_ready or tg_ready
 
     def _tg(msg: str) -> None:
-        if tg_token and tg_chat_id:
+        if tg_ready:
+            send_alert(tg_token, tg_chat_id, msg)
+
+    def _notify(msg: str) -> None:
+        """Fan out to every configured channel: WhatsApp (best-effort — Twilio
+        trial caps at 50 msgs/day) and Telegram (no cap)."""
+        if wa_ready:
+            send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to, msg)
+        if tg_ready:
             send_alert(tg_token, tg_chat_id, msg)
 
     # ── Holiday alert (9:00–9:14 AM, once per day) ───────────────────────────
-    if wa_ready and now_t.hour == 9 and now_t.minute < 15:
+    if notify_ready and now_t.hour == 9 and now_t.minute < 15:
         holiday_key = f"holiday_{now_t.date()}"
         if holiday_key not in last_alerted and is_market_holiday(now_t.date()):
-            _wa(format_holiday_alert(ticker, now_t.date()))
+            _notify(format_holiday_alert(ticker, now_t.date()))
             last_alerted[holiday_key]                   = now_t
             last_alerted[f"pre_open_{now_t.date()}"]    = now_t
             last_alerted[f"post_open_{now_t.date()}"]   = now_t
@@ -176,7 +182,7 @@ def _dispatch_alerts(
             return  # no further alerts on holidays
 
     # ── Pre-open briefing (9:00–9:14 AM, once per day) ───────────────────────
-    if wa_ready and now_t.hour == 9 and now_t.minute < 15:
+    if notify_ready and now_t.hour == 9 and now_t.minute < 15:
         pre_key = f"pre_open_{now_t.date()}"
         if pre_key not in last_alerted:
             q   = data.get("quote", {})
@@ -196,12 +202,12 @@ def _dispatch_alerts(
                 score_result    = data.get("score_result") or {},
                 now             = now_t,
             )
-            _wa(msg)
+            _notify(msg)
             last_alerted[pre_key] = now_t
             logger.info("Pre-open briefing sent")
 
     # ── Post-open update (9:20–9:59 AM, once per day) ────────────────────────
-    if wa_ready and now_t.hour == 9 and now_t.minute >= 20:
+    if notify_ready and now_t.hour == 9 and now_t.minute >= 20:
         post_key = f"post_open_{now_t.date()}"
         if post_key not in last_alerted:
             q    = data.get("quote", {})
@@ -220,12 +226,12 @@ def _dispatch_alerts(
                 score_result  = data.get("score_result") or {},
                 now           = now_t,
             )
-            _wa(msg)
+            _notify(msg)
             last_alerted[post_key] = now_t
             logger.info("Post-open update sent")
 
     # ── EOD summary (3:30–3:59 PM, once per day) ─────────────────────────────
-    if wa_ready and now_t.hour == 15 and now_t.minute >= 30:
+    if notify_ready and now_t.hour == 15 and now_t.minute >= 30:
         eod_key = f"eod_{now_t.date()}"
         if eod_key not in last_alerted:
             q   = data.get("quote", {})
@@ -248,7 +254,7 @@ def _dispatch_alerts(
                 score_result = data.get("score_result") or {},
                 now          = now_t,
             )
-            _wa(msg)
+            _notify(msg)
             last_alerted[eod_key] = now_t
             logger.info("EOD summary sent")
 
@@ -317,7 +323,7 @@ def _dispatch_alerts(
                 ]
 
             intra_msg = "\n".join(intra_lines)
-            _wa(intra_msg)
+            _notify(intra_msg)
             last_alerted[sig_key] = datetime.now(_IST)
             logger.info("Intraday signal alert sent: %s", intra_sig["action"])
 
@@ -330,12 +336,12 @@ def _dispatch_alerts(
         hits = check_and_mark(cur_price, day_high, day_low)
         for hit in hits:
             msg = format_target_alert(ticker, hit, cur_price)
-            _wa(msg)
+            _notify(msg)
             logger.info("Target hit alert sent: %s", hit.get("label"))
 
     # ── Time-based exit alert ─────────────────────────────────────────────────
     time_act = data.get("time_action")
-    if time_act and wa_ready:
+    if time_act and notify_ready:
         ta_key   = f"time_{time_act['action']}"
         last_t   = last_alerted.get(ta_key)
         too_soon = last_t and (datetime.now(_IST) - last_t).total_seconds() < 3600
@@ -346,14 +352,14 @@ def _dispatch_alerts(
             )
             if time_act["action"] == "tighten_stop":
                 ta_msg += f"\nNew stop: ₹{time_act.get('new_sl', 0):,.2f}"
-            _wa(ta_msg)
+            _notify(ta_msg)
             last_alerted[ta_key] = datetime.now(_IST)
             logger.info("Time-based exit alert sent: %s", time_act["action"])
 
     # ── Sentiment shift alert ─────────────────────────────────────────────────
     shift_alert = (data.get("news_snapshot") or {}).get("shift_alert")
     if shift_alert:
-        _wa(shift_alert)
+        _notify(shift_alert)
         logger.info("Sentiment shift alert sent")
 
     # ── Strong score alert (existing behaviour) ───────────────────────────────
@@ -463,9 +469,23 @@ def _dispatch_alerts(
         else:
             continue
 
-        _wa(msg)
-        _tg(msg)
+        _notify(msg)
         logger.info("Strategy event alert sent: %s", event_type)
+
+
+def _broadcast(msg: str) -> None:
+    """Send a system/auth message to every configured channel (WhatsApp +
+    Telegram). Reads creds from env so it works anywhere without plumbing."""
+    wa_sid   = os.getenv("TWILIO_ACCOUNT_SID", "")
+    wa_token = os.getenv("TWILIO_AUTH_TOKEN", "")
+    wa_from  = os.getenv("TWILIO_WHATSAPP_FROM", "")
+    wa_to    = os.getenv("TWILIO_WHATSAPP_TO", "")
+    tg_token   = os.getenv("TELEGRAM_TOKEN", "")
+    tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    if wa_sid and wa_token and wa_from and wa_to:
+        send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to, msg)
+    if tg_token and tg_chat_id:
+        send_alert(tg_token, tg_chat_id, msg)
 
 
 def _reconcile_on_startup(
@@ -486,14 +506,12 @@ def _reconcile_on_startup(
         return
 
     logger.error("RECONCILE MISMATCH: bot=%d  broker=%d shares", bot_qty, held)
-    if wa_ready:
-        send_whatsapp_alert(
-            wa_sid, wa_token, wa_from, wa_to,
-            f"⚠️ *Position mismatch — {ticker}*\n\n"
-            f"Bot thinks it holds {bot_qty} shares, but Zerodha shows {held}.\n"
-            f"The bot will keep using its own record. If that's wrong, fix it "
-            f"before the next signal (e.g. send SELL or clear state).",
-        )
+    _broadcast(
+        f"⚠️ *Position mismatch — {ticker}*\n\n"
+        f"Bot thinks it holds {bot_qty} shares, but Zerodha shows {held}.\n"
+        f"The bot will keep using its own record. If that's wrong, fix it "
+        f"before the next signal (e.g. send SELL or clear state)."
+    )
 
 
 def main() -> None:
@@ -541,34 +559,30 @@ def main() -> None:
                     logger.info("Kite not authenticated — attempting auto_login")
                     if broker.auto_login(_kite_user, _kite_pass, _kite_totp):
                         logger.warning("Kite auto_login succeeded — auto-trading ACTIVE")
-                        if wa_ready:
-                            send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to,
-                                f"✅ {ticker} auto-trading ACTIVE\n"
-                                f"Capital: ₹{capital:,.0f}  Risk: {risk_pct}%/trade")
+                        _broadcast(
+                            f"✅ {ticker} auto-trading ACTIVE\n"
+                            f"Capital: ₹{capital:,.0f}  Risk: {risk_pct}%/trade")
                     else:
-                        logger.error("Kite auto_login failed — sending login URL via WhatsApp")
-                        if wa_ready:
-                            send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to,
-                                f"🔐 Kite auth needed\n\n"
-                                f"1. Open: {broker.login_url()}\n"
-                                f"2. Log in with your Zerodha credentials\n"
-                                f"3. Copy request_token from redirect URL\n"
-                                f"4. Reply: TOKEN <request_token>")
+                        logger.error("Kite auto_login failed — sending login URL")
+                        _broadcast(
+                            f"🔐 Kite auth needed\n\n"
+                            f"1. Open: {broker.login_url()}\n"
+                            f"2. Log in with your Zerodha credentials\n"
+                            f"3. Copy request_token from redirect URL\n"
+                            f"4. Reply: TOKEN <request_token>")
                         broker = None
                 else:
-                    logger.warning("Kite credentials not in .env — sending login URL via WhatsApp")
-                    if wa_ready:
-                        send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to,
-                            f"🔐 Kite auth needed for auto-trading\n\n"
-                            f"Open this link and log in:\n{broker.login_url()}\n\n"
-                            f"Then reply: TOKEN <request_token>")
+                    logger.warning("Kite credentials not in .env — sending login URL")
+                    _broadcast(
+                        f"🔐 Kite auth needed for auto-trading\n\n"
+                        f"Open this link and log in:\n{broker.login_url()}\n\n"
+                        f"Then reply: TOKEN <request_token>")
                     broker = None
             else:
                 logger.warning("Kite already authenticated — auto-trading ACTIVE")
-                if wa_ready:
-                    send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to,
-                        f"✅ {ticker} auto-trading ACTIVE\n"
-                        f"Capital: ₹{capital:,.0f}  Risk: {risk_pct}%/trade")
+                _broadcast(
+                    f"✅ {ticker} auto-trading ACTIVE\n"
+                    f"Capital: ₹{capital:,.0f}  Risk: {risk_pct}%/trade")
 
     # ── Startup reconciliation ─────────────────────────────────────────────────
     # Detect divergence between what the bot believes it holds (strategy_state)
@@ -595,18 +609,16 @@ def main() -> None:
 
                 if authed:
                     logger.warning("Kite auth OK for %s — auto-trading ACTIVE", now.date())
-                    if wa_ready:
-                        send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to,
-                            f"✅ {ticker} auto-trading ACTIVE today\n"
-                            f"Capital: ₹{capital:,.0f}  Risk: {risk_pct}%/trade")
+                    _broadcast(
+                        f"✅ {ticker} auto-trading ACTIVE today\n"
+                        f"Capital: ₹{capital:,.0f}  Risk: {risk_pct}%/trade")
                 else:
                     logger.error("Kite daily re-auth FAILED — auto-trading suspended")
-                    if wa_ready:
-                        send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to,
-                            f"🚨 {ticker} auto-trading is DOWN today\n\n"
-                            f"Kite login failed — no orders will be placed. "
-                            f"Reply TOKEN <request_token> after logging in:\n"
-                            f"{broker.login_url()}")
+                    _broadcast(
+                        f"🚨 {ticker} auto-trading is DOWN today\n\n"
+                        f"Kite login failed — no orders will be placed. "
+                        f"Reply TOKEN <request_token> after logging in:\n"
+                        f"{broker.login_url()}")
                     broker = None
                 last_alerted[auth_key] = now
 
