@@ -138,12 +138,24 @@ def _handle_help(parts: list[str]) -> str:
         f"BUY <price> <qty>  with custom qty\n"
         f"SELL               close trade\n"
         f"STATUS             live P&L\n"
+        f"KITE               check auto-trading status\n"
         f"TOKEN <token>      complete Kite daily auth\n"
         f"HELP               this message\n"
         f"\n"
         f"Auto-trading: {auto}\n"
         f"Example: BUY 1693"
     )
+
+
+def _handle_kite(parts: list[str]) -> str:
+    """Report whether Kite auto-trading will execute today."""
+    from src.broker import kite_execution_status
+    result = kite_execution_status()
+    lines = [result["summary"], ""]
+    tick = {True: "✅", False: "❌"}
+    for c in result["checks"]:
+        lines.append(f"{tick[c['ok']]} {c['name']}: {c['detail']}")
+    return "\n".join(lines)
 
 
 def _handle_token(parts: list[str]) -> str:
@@ -174,6 +186,7 @@ _HANDLERS = {
     "STATUS": _handle_status,
     "HELP":   _handle_help,
     "TOKEN":  _handle_token,
+    "KITE":   _handle_kite,
 }
 
 
