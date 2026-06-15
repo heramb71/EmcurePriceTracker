@@ -70,15 +70,15 @@ def test_confirmed_fill_records_actual_fill_price_and_targets():
     # Arrange
     state = _default_state()
     broker = _FillBroker(fill_price=1702.5)
-    # Act
+    # Act — atr=30 → targets re-anchored off the real fill at +1/+2/+3 × ATR
     state, events = main._execute_strategy(
         state, "EMCURE", _QUOTE, _ST, _BUY, _SIZING, 30.0, halted=False, broker=broker
     )
     # Assert
     assert events[0][0] == "open"
     assert state["position"]["entry"] == 1702.5
-    assert state["position"]["t1"] == 1712.5  # fill + 10
-    assert state["position"]["t2"] == 1722.5  # fill + 20
+    assert state["position"]["t1"] == 1732.5  # fill + 1 × ATR
+    assert state["position"]["t2"] == 1762.5  # fill + 2 × ATR
     assert broker.orders == [("BUY", 5)]
 
 
@@ -100,9 +100,9 @@ def test_failed_sell_retains_position():
     state, _ = main._execute_strategy(
         state, "EMCURE", _QUOTE, _ST, _BUY, _SIZING, 30.0, halted=False, broker=_FillBroker()
     )
-    # Act — price hits a target but the SELL never fills
+    # Act — price clears T1 (fill 1702.5 + 1×ATR = 1732.5) but the SELL never fills
     state, events = main._execute_strategy(
-        state, "EMCURE", {"price": 1730.0, "volume": 1}, _ST,
+        state, "EMCURE", {"price": 1740.0, "volume": 1}, _ST,
         {"triggered": False}, None, 30.0, halted=False, broker=_FailBroker()
     )
     # Assert
@@ -148,6 +148,21 @@ def test_untracked_holdings_skip_buy():
     assert state["position"] is None
     assert events[0][0] == "reconcile_warn"
     assert broker.orders == []  # no order attempted
+
+
+def test_near_event_blocks_buy():
+    # Arrange
+    state = _default_state()
+    broker = _FillBroker()
+    # Act
+    state, events = main._execute_strategy(
+        state, "EMCURE", _QUOTE, _ST, _BUY, _SIZING, 30.0,
+        halted=False, broker=broker, near_event=True,
+    )
+    # Assert
+    assert state["position"] is None
+    assert events[0][0] == "event_blocked"
+    assert broker.orders == []
 
 
 def test_sizing_at_fill_keeps_filled_qty():

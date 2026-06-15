@@ -1,12 +1,41 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Optional
 
 import pandas as pd
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
+
+# Transient yfinance failures (rate limits, empty payloads) are common. Retry a
+# few times with a short backoff before giving up so a single bad poll doesn't
+# blank out a whole cycle.
+_MAX_RETRIES = 3
+_RETRY_BACKOFF_S = 2
+
+
+def _download_with_retry(
+    symbol: str, *, period: str, interval: str
+) -> Optional[pd.DataFrame]:
+    """yf.download with retry/backoff. Returns a non-empty DataFrame or None."""
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            raw = yf.download(symbol, period=period, interval=interval, progress=False)
+            if raw is not None and not raw.empty:
+                return raw
+            logger.warning(
+                "yf.download empty for %s (%s/%s), attempt %d/%d",
+                symbol, period, interval, attempt, _MAX_RETRIES,
+            )
+        except Exception:
+            logger.exception(
+                "yf.download error for %s, attempt %d/%d", symbol, attempt, _MAX_RETRIES
+            )
+        if attempt < _MAX_RETRIES:
+            time.sleep(_RETRY_BACKOFF_S * attempt)
+    return None
 
 
 def _normalise(raw: "pd.DataFrame") -> "pd.DataFrame":
@@ -26,29 +55,21 @@ def _normalise(raw: "pd.DataFrame") -> "pd.DataFrame":
 
 
 def fetch_daily(ticker: str, days: int = 100) -> Optional[pd.DataFrame]:
-    try:
-        raw = yf.download(f"{ticker}.NS", period=f"{days}d", interval="1d", progress=False)
-        if raw is None or raw.empty:
-            return None
-        df = _normalise(raw)
-        return df.sort_values("date").reset_index(drop=True)
-    except Exception:
-        logger.exception("fetch_daily failed for %s", ticker)
+    raw = _download_with_retry(f"{ticker}.NS", period=f"{days}d", interval="1d")
+    if raw is None:
+        logger.error("fetch_daily exhausted retries for %s", ticker)
         return None
+    df = _normalise(raw)
+    return df.sort_values("date").reset_index(drop=True)
 
 
 def fetch_intraday(ticker: str, interval: str = "5m", days: int = 5) -> Optional[pd.DataFrame]:
-    try:
-        raw = yf.download(
-            f"{ticker}.NS", period=f"{days}d", interval=interval, progress=False
-        )
-        if raw is None or raw.empty:
-            return None
-        df = _normalise(raw)
-        return df.sort_values("date").reset_index(drop=True)
-    except Exception:
-        logger.exception("fetch_intraday failed for %s", ticker)
+    raw = _download_with_retry(f"{ticker}.NS", period=f"{days}d", interval=interval)
+    if raw is None:
+        logger.error("fetch_intraday exhausted retries for %s", ticker)
         return None
+    df = _normalise(raw)
+    return df.sort_values("date").reset_index(drop=True)
 
 
 def fetch_live_quote(ticker: str) -> Optional[dict]:

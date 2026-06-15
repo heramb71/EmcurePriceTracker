@@ -19,13 +19,14 @@ def test_position_size_caps_qty_by_capital():
     assert sizing["qty"] * sizing["entry"] <= 15000
 
 
-def test_position_size_fixed_rupee_targets():
+def test_position_size_atr_scaled_targets():
     # Act
     sizing = compute_position_size(capital=100000, risk_pct=1.0, entry=1700.0, atr=30.0)
-    # Assert — fixed +10/+20/+25 targets
-    assert sizing["t1"] == 1710.0
-    assert sizing["t2"] == 1720.0
-    assert sizing["t3"] == 1725.0
+    # Assert — targets scale with ATR: entry + {1,2,3} × ATR
+    assert sizing["t1"] == 1730.0   # +1 × 30
+    assert sizing["t2"] == 1760.0   # +2 × 30
+    assert sizing["t3"] == 1790.0   # +3 × 30
+    assert sizing["sl"] == 1670.0   # −1 × 30
 
 
 def test_position_size_returns_none_on_invalid_input():
@@ -100,3 +101,14 @@ def test_buy_gate_blocks_on_downtrend():
     candle = {"open": 1695, "high": 1705, "low": 1690, "close": 1702}
     result = check_buy_gate(quote, indicators, st, candle, "Trending Down")
     assert result["triggered"] is False
+
+
+def test_buy_gate_blocks_in_sideways_regime():
+    # All technicals pass, but regime is Sideways → hard-blocked
+    quote = {"price": 1700.0, "volume": 200000}
+    indicators = {"ema20": 1690.0, "rsi": 55.0, "avg_volume": 100000}
+    st = {"supertrend": 1650.0, "direction": 1}
+    candle = {"open": 1695, "high": 1705, "low": 1690, "close": 1702}
+    result = check_buy_gate(quote, indicators, st, candle, "Sideways")
+    assert result["triggered"] is False
+    assert result["conditions"]["regime_ok"] is False

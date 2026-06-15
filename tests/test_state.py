@@ -54,16 +54,21 @@ def test_t2_books_without_moving_stop():
     assert pos["sl"] == pos["entry"]           # unchanged from T1
 
 
-def test_close_position_records_journal_and_total_pnl():
+def test_close_position_records_journal_with_net_pnl():
     state = _open(qty=6)
     state, _ = book_partial(state, 1710.0, reason="t1_hit")   # books 2 @ +10 = +20
-    state, total = close_position(state, exit_price=1720.0, reason="supertrend_exit")
+    state, net = close_position(state, exit_price=1720.0, reason="supertrend_exit")
     assert state["position"] is None
     assert len(state["journal"]) == 1
     trade = state["journal"][-1]
     assert trade["reason"] == "supertrend_exit"
-    # partial +20 + remaining 4 @ +20 = +80 → total 100
-    assert total == 100.0
+    # gross: partial +20 + remaining 4 @ +20 = +80 → 100
+    assert trade["gross_pnl"] == 100.0
+    # net is gross minus real charges (STT/exchange/GST/stamp)
+    assert trade["charges"] > 0
+    assert trade["total_pnl"] == round(100.0 - trade["charges"], 2)
+    assert net == trade["total_pnl"]
+    assert net < 100.0
 
 
 def test_close_with_loss_increments_consecutive_losses():

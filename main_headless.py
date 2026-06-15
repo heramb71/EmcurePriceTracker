@@ -452,6 +452,14 @@ def _dispatch_alerts(
                 f"positions — fix the mismatch before the next signal."
             )
             logger.error("AUTO-TRADE BUY skipped — broker holds %d untracked", payload["held"])
+
+        elif event_type == "event_blocked":
+            msg = (
+                f"📅 *Auto-trade BUY skipped — {ticker}*\n\n"
+                f"A buy signal fired but earnings are within a couple of days. "
+                f"Skipping new entries to avoid overnight gap risk around results."
+            )
+            logger.warning("AUTO-TRADE BUY skipped — near earnings event")
         else:
             continue
 

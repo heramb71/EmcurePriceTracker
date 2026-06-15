@@ -110,6 +110,9 @@ from src.state import (
     check_circuit_breaker,
     PARTIAL_DENOM,
 )
+from src.events import is_near_event
+
+logger = logging.getLogger(__name__)
 
 
 def _sizing_at_fill(sizing: dict, fill_price: float, filled_qty: int, atr: float) -> dict:
@@ -133,6 +136,7 @@ def _execute_strategy(
     atr: float,
     halted: bool,
     broker=None,
+    near_event: bool = False,
 ) -> tuple[dict, list[tuple[str, dict]]]:
     """
     Run the Supertrend strategy step and return (state, events).
@@ -189,6 +193,9 @@ def _execute_strategy(
             }))
 
     elif not halted and buy_signal["triggered"] and sizing:
+        if near_event:
+            events.append(("event_blocked", {"ticker": ticker}))
+            return state, events
         fill_sizing = sizing
         if broker:
             # Idempotency: the bot thinks it is flat — confirm the broker agrees
@@ -229,6 +236,19 @@ def _refresh(ticker: str, news_snapshot: dict | None = None, broker=None) -> dic
 
     # Prefer live quote (fresher price during market hours); fall back to daily
     quote = fetch_live_quote(ticker) or get_latest_quote(df_daily)
+
+    # When auto-trading, decide on Zerodha's real-time LTP instead of the
+    # ~15-min-delayed Yahoo price. Indicators still use daily history; only the
+    # current decision/management price is upgraded. Ignore a 0 (fetch failure).
+    if broker is not None:
+        try:
+            ltp = broker.get_ltp(ticker)
+            if ltp and ltp > 0:
+                quote = {**quote, "price": round(float(ltp), 2),
+                         "close": round(float(ltp), 2), "source": "kite_ltp"}
+        except Exception:
+            logger.warning("Kite LTP fetch failed; using delayed quote", exc_info=True)
+
     close = df_daily["close"]
 
     # Indicators
@@ -349,8 +369,16 @@ def _refresh(ticker: str, news_snapshot: dict | None = None, broker=None) -> dic
     state = reset_session_if_new_day(state)
     halted, halted_reason = check_circuit_breaker(state, CAPITAL, MAX_DAILY_LOSS_PCT)
 
+    # Only consult the (cached, once/day) earnings calendar when an entry is actually
+    # in play — flat, signalled, and not halted.
+    near_event = (
+        is_near_event(ticker)
+        if (not state.get("position") and buy_signal["triggered"] and not halted)
+        else False
+    )
+
     state, events = _execute_strategy(
-        state, ticker, quote, st_last, buy_signal, sizing, atr, halted, broker
+        state, ticker, quote, st_last, buy_signal, sizing, atr, halted, broker, near_event
     )
     save_state(state)
 

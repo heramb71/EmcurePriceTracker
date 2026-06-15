@@ -5,9 +5,23 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# ── Tuning constants ─────────────────────────────────────────────────────────
+# Stop and targets scale with ATR so exits adapt to volatility instead of using
+# flat rupee amounts (too tight on busy days, too far on quiet ones).
+# EMCURE ATR ≈ ₹30–40 → stop ≈ ₹35, T1/T2/T3 ≈ ₹35/₹70/₹105.
+STOP_ATR_MULT = 1.0          # stop = entry − 1.0 × ATR
+T1_ATR_MULT   = 1.0          # T1   = entry + 1.0 × ATR
+T2_ATR_MULT   = 2.0          # T2   = entry + 2.0 × ATR
+T3_ATR_MULT   = 3.0          # T3   = entry + 3.0 × ATR
+
+# Entry-gate thresholds.
+RSI_MIN = 40.0
+RSI_MAX = 75.0
+VOLUME_RATIO_MIN = 0.8
+
 
 # ────────────────────────────────────────────────────────────────────────────
-# Layer 1 — Signal: 4-condition BUY gate
+# Layer 1 — Signal: BUY gate (trend + momentum + volume + regime)
 # ────────────────────────────────────────────────────────────────────────────
 
 
@@ -52,7 +66,9 @@ def check_buy_gate(
         "conditions": { "trend", "momentum", "volume", "candle", "regime_ok" },
         "details": {...explanatory data...}
       }
-    A pass requires the four primary conditions. Regime is informational.
+    A pass requires trend + momentum + volume + a non-bearish regime. Entries
+    are hard-blocked when the regime is Sideways or Trending Down, where the
+    Supertrend signal whipsaws.
     """
     price = float(quote.get("price", 0.0))
     ema20 = float(indicators.get("ema20", 0.0))
@@ -64,12 +80,14 @@ def check_buy_gate(
 
     trend_ok = st_direction == 1
 
-    momentum_ok = 40.0 < rsi < 75.0
+    momentum_ok = RSI_MIN < rsi < RSI_MAX
 
     vol_ratio = (volume / avg_volume) if avg_volume > 0 else 0.0
-    volume_ok = vol_ratio > 0.8
+    volume_ok = vol_ratio > VOLUME_RATIO_MIN
 
     candle_flags = evaluate_candle(last_candle)
+    # Regime is now a hard gate: this is a trend-following strategy, so block
+    # entries in Sideways/Trending Down where the Supertrend signal whipsaws.
     regime_ok = regime == "Trending Up"
 
     conditions = {
@@ -80,7 +98,7 @@ def check_buy_gate(
         "regime_ok": regime_ok,
     }
 
-    triggered = trend_ok and momentum_ok and volume_ok
+    triggered = trend_ok and momentum_ok and volume_ok and regime_ok
 
     return {
         "triggered": triggered,
@@ -99,7 +117,7 @@ def check_buy_gate(
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Layer 2 — Sizing: ATR×2 stop + 1% capital risk
+# Layer 2 — Sizing: ATR-scaled stop + targets, capital-capped qty
 # ────────────────────────────────────────────────────────────────────────────
 
 
@@ -108,15 +126,14 @@ def compute_position_size(
     risk_pct: float,
     entry: float,
     atr: float,
-    atr_mult: float = 0.5,
-    rr: float = 1.0,
+    atr_mult: float = STOP_ATR_MULT,
 ) -> Optional[dict]:
     """
-    Compute position sizing for intraday trades:
-      - Stop = entry − atr_mult × ATR  (0.5× ATR ≈ ₹30 stop for EMCURE)
+    Compute position sizing with volatility-scaled stop and targets:
+      - Stop = entry − atr_mult × ATR
+      - T1/T2/T3 = entry + {1,2,3} × ATR  (scales with volatility)
       - Risk amount = capital × risk_pct%
-      - Qty = floor(risk amount / risk per share)
-      - T1  = entry + rr × risk per share  (1:1 RR keeps T1 realistic intraday)
+      - Qty = floor(risk amount / risk per share), capped by available capital
     Returns None when inputs are invalid.
     """
     if entry <= 0 or atr <= 0 or capital <= 0 or risk_pct <= 0:
@@ -133,9 +150,9 @@ def compute_position_size(
     if qty <= 0:
         return None
 
-    t1 = entry + 10.0
-    t2 = entry + 20.0
-    t3 = entry + 25.0
+    t1 = entry + T1_ATR_MULT * atr
+    t2 = entry + T2_ATR_MULT * atr
+    t3 = entry + T3_ATR_MULT * atr
     return {
         "entry": round(entry, 2),
         "sl": round(sl, 2),
@@ -148,7 +165,6 @@ def compute_position_size(
         "capital_used": round(qty * entry, 2),
         "atr": round(atr, 2),
         "atr_mult": atr_mult,
-        "rr": rr,
     }
 
 
