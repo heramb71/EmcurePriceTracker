@@ -190,38 +190,45 @@ def format_target_alert(ticker: str, hit: dict, current_price: float) -> str:
     kind    = hit["kind"]
 
     if kind == "stoploss":
-        emoji = "🛑"
-        header = f"STOP LOSS HIT — ₹{level:,.2f}"
-        action = "Exit position immediately."
+        lines = [
+            f"🛑 *Stop Loss Hit — {ticker}*",
+            "",
+            f"Price fell to ₹{level:,.2f} — our stop loss level.",
+            f"Bought at ₹{entry:,.2f}, now at ₹{current_price:,.2f}.",
+            f"Loss on {qty} shares: ₹{pnl:+,.0f}",
+            "",
+            f"👉 Exit your position now to protect capital.",
+        ]
     elif label == "T1":
-        emoji = "🎯"
-        header = f"T1 HIT — ₹{level:,.2f}"
-        action = "Book half (exit 50%). Move SL to entry."
+        lines = [
+            f"🎯 *First Target Hit — {ticker}*",
+            "",
+            f"Price reached ₹{level:,.2f}  (+₹10 from entry ₹{entry:,.2f})",
+            f"Profit so far: ₹{pnl:+,.0f} on {qty} shares ✅",
+            "",
+            f"👉 Sell half your shares now.",
+            f"Move stop loss up to ₹{entry:,.2f} — no loss possible now.",
+            "",
+            f"Next targets: ₹{entry+20:,.2f} (+₹20)  ·  ₹{entry+25:,.2f} (+₹25)",
+        ]
     elif label == "T2":
-        emoji = "🎯🎯"
-        header = f"T2 HIT — ₹{level:,.2f}"
-        action = "Book remaining or trail to T3."
+        lines = [
+            f"🎯🎯 *Second Target Hit — {ticker}*",
+            "",
+            f"Price reached ₹{level:,.2f}  (+₹20 from entry ₹{entry:,.2f})",
+            f"Profit so far: ₹{pnl:+,.0f} on {qty} shares ✅",
+            "",
+            f"👉 You can exit remaining shares here,",
+            f"or hold for final target ₹{entry+25:,.2f} (+₹25).",
+        ]
     else:
-        emoji = "🏆"
-        header = f"T3 HIT — ₹{level:,.2f}"
-        action = "Full exit — target achieved!"
-
-    remaining = []
-    if kind == "target":
-        if label in ("T1",) and pnl >= 0:
-            remaining.append(f"T2 ₹{entry+20:.2f}  T3 ₹{entry+25:.2f}")
-
-    lines = [
-        f"{emoji} *{ticker}.NS — {header}*",
-        "",
-        f"Entry    ₹{entry:,.2f}",
-        f"Current  ₹{current_price:,.2f}  (+₹{round(current_price-entry,2):.0f}/sh)",
-        f"Qty      {qty} sh",
-        f"P&L      ₹{pnl:+,.0f}",
-        "",
-        f"👉 {action}",
-    ]
-    if remaining:
-        lines += ["", "Remaining targets:"] + remaining
+        lines = [
+            f"🏆 *Final Target Hit — {ticker}*",
+            "",
+            f"Price reached ₹{level:,.2f}  (+₹25 from entry ₹{entry:,.2f})",
+            f"Total profit: ₹{pnl:+,.0f} on {qty} shares 🎉",
+            "",
+            f"👉 Exit full position. Great trade!",
+        ]
 
     return "\n".join(lines)

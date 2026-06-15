@@ -248,45 +248,55 @@ def _dispatch_alerts(
             tier_emoji = {"A — HIGH": "🟢", "B — MODERATE": "🟡",
                           "C — LOW": "🟠", "SKIP": "🔴"}.get(pred.get("tier", ""), "⚪")
             _pb = lambda p, w=18: "█" * round(p / 100 * w) + "░" * (w - round(p / 100 * w))
-            action_label = intra_sig["action"].replace("_", " ")
             action_emoji = "🔔🔔" if intra_sig["action"] == "STRONG_BUY" else "🔔"
             trend_icon   = {"Upward": "📈", "Downward": "📉", "Choppy": "〰️"}.get(trend_7d, "📊")
             change_pct   = q.get("change_pct", 0)
             gap_val      = sma7_data.get("gap", 0)
+            price_now    = q.get("price", 0)
             r_t1 = pred.get("reach_t1", 0)
             r_t2 = pred.get("reach_t2", 0)
             r_t3 = pred.get("reach_t3", 0)
             r_st = pred.get("p_stop", 0)
-            intra_msg = (
-                f"{action_emoji} *{ticker}.NS — {action_label}*\n"
-                f"{intra_sig['reason']}\n"
-                f"\n"
-                f"Current  ₹{q.get('price', 0):,.2f}  "
-                f"({'+' if change_pct >= 0 else ''}{change_pct:.1f}%)\n"
-                f"SMA7     ₹{sma7_data.get('sma7', 0):,.2f}  (gap ₹{gap_val:+.0f})\n"
-                f"Trend    {trend_icon} {trend_7d}\n"
-                f"\n"
-                f"{tier_emoji} *Confidence {score}/100 — {pred.get('tier', '')}*\n"
-                f"```\n"
-                f"T1 +₹10  {_pb(r_t1)} {r_t1:.0f}%\n"
-                f"T2 +₹20  {_pb(r_t2)} {r_t2:.0f}%\n"
-                f"T3 +₹25  {_pb(r_t3)} {r_t3:.0f}%\n"
-                f"Stop     {_pb(r_st)} {r_st:.0f}%\n"
-                f"```\n"
-                f"Rec: {pred.get('target_rec', '')}  ·  EV ₹{pred.get('ev', 0):+,.0f}\n"
+
+            confidence_label = (
+                "High — strong setup 👍"  if score >= 75 else
+                "Medium — decent chance"  if score >= 55 else
+                "Low — be cautious"       if score >= 40 else
+                "Very low — consider skipping"
             )
+
+            intra_lines = [
+                f"{action_emoji} *Buy Signal — {ticker}*",
+                f"📉 Stock has dropped ₹{abs(gap_val):.0f} below its 7-day average",
+                f"This is the entry zone we were waiting for.",
+                "",
+                f"Current price: ₹{price_now:,.2f}  ({'+' if change_pct >= 0 else ''}{change_pct:.1f}% today)",
+                f"7-day average: ₹{sma7_data.get('sma7', 0):,.2f}",
+                f"Trend: {trend_icon} {trend_7d}",
+                "",
+                f"{tier_emoji} *Confidence: {confidence_label}*",
+                f"Chance of +₹10: {r_t1:.0f}%",
+                f"Chance of +₹20: {r_t2:.0f}%",
+                f"Chance of +₹25: {r_t3:.0f}%",
+                f"Chance of stop: {r_st:.0f}%",
+            ]
+
+            if pred.get("ev", 0) != 0:
+                ev_label = "expected profit" if pred["ev"] > 0 else "expected loss"
+                intra_lines.append(f"Expected outcome: ₹{pred['ev']:+,.0f} ({ev_label})")
+
             if rupee_lvls:
-                intra_msg += (
-                    f"\n📋 *Trade Plan*  (₹{capital:,.0f})\n"
-                    f"```\n"
-                    f"Qty    {rupee_lvls['qty']} sh @ ₹{rupee_lvls['entry']:,.2f}\n"
-                    f"SL     ₹{rupee_lvls['sl']:,.2f}  (-₹{rupee_lvls['sl_diff']:.0f})\n"
-                    f"T1     ₹{rupee_lvls['t1']:,.2f}  (+₹10)\n"
-                    f"T2     ₹{rupee_lvls['t2']:,.2f}  (+₹20) primary\n"
-                    f"T3     ₹{rupee_lvls['t3']:,.2f}  (+₹25) stretch\n"
-                    f"Max    ₹{rupee_lvls['max_risk']:,.0f} risk\n"
-                    f"```\n"
-                )
+                intra_lines += [
+                    "",
+                    f"📋 *Trade plan ({rupee_lvls['qty']} shares):*",
+                    f"Buy at:       ₹{rupee_lvls['entry']:,.2f}",
+                    f"Sell half at: ₹{rupee_lvls['t1']:,.2f}  (+₹10, profit ~₹{10 * rupee_lvls['qty']:,.0f})",
+                    f"Next target:  ₹{rupee_lvls['t2']:,.2f}  (+₹20, profit ~₹{20 * rupee_lvls['qty']:,.0f})",
+                    f"Stretch:      ₹{rupee_lvls['t3']:,.2f}  (+₹25, profit ~₹{25 * rupee_lvls['qty']:,.0f})",
+                    f"Stop loss:    ₹{rupee_lvls['sl']:,.2f}  (max loss ₹{rupee_lvls['max_risk']:,.0f})",
+                ]
+
+            intra_msg = "\n".join(intra_lines)
             _wa(intra_msg)
             last_alerted[sig_key] = datetime.now(_IST)
             logger.info("Intraday signal alert sent: %s", intra_sig["action"])
