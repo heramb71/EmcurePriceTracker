@@ -201,10 +201,13 @@ class KiteBroker:
 
     # ── Order placement ──────────────────────────────────────────────────────
 
-    def place_market_order(self, ticker: str, qty: int, side: str) -> Optional[str]:
+    def place_market_order(self, ticker: str, qty: int, side: str, slippage_pct: float = 0.1) -> Optional[str]:
         """
-        Place an NSE intraday (MIS) market order.
+        Place an NSE intraday (MIS) limit order with a small slippage buffer.
+        Zerodha API does not allow market orders without market protection,
+        so we use a limit order priced slightly above LTP (BUY) or below (SELL).
         side: 'BUY' or 'SELL'
+        slippage_pct: % away from LTP to set limit price (default 0.1%)
         Returns order_id string, or None on failure.
         """
         from kiteconnect import KiteConnect
@@ -216,6 +219,17 @@ class KiteBroker:
             else KiteConnect.TRANSACTION_TYPE_SELL
         )
         try:
+            ltp = self.get_ltp(ticker)
+            if ltp <= 0:
+                logger.error("place_market_order: could not fetch LTP for %s", symbol)
+                return None
+
+            # BUY: bid slightly above LTP to ensure fill; SELL: slightly below
+            if side == "BUY":
+                limit_price = round(ltp * (1 + slippage_pct / 100), 1)
+            else:
+                limit_price = round(ltp * (1 - slippage_pct / 100), 1)
+
             order_id = self.kite.place_order(
                 variety=KiteConnect.VARIETY_REGULAR,
                 exchange=KiteConnect.EXCHANGE_NSE,
@@ -223,10 +237,12 @@ class KiteBroker:
                 transaction_type=tx,
                 quantity=qty,
                 product=KiteConnect.PRODUCT_MIS,
-                order_type=KiteConnect.ORDER_TYPE_MARKET,
+                order_type=KiteConnect.ORDER_TYPE_LIMIT,
+                price=limit_price,
             )
             logger.warning(
-                "ORDER PLACED  %s  %s  %d sh  order_id=%s", side, symbol, qty, order_id
+                "ORDER PLACED  %s  %s  %d sh  limit=₹%.1f  order_id=%s",
+                side, symbol, qty, limit_price, order_id,
             )
             return str(order_id)
         except Exception:
