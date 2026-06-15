@@ -187,12 +187,12 @@ class KiteBroker:
             return 0.0
 
     def get_position(self, ticker: str) -> Optional[dict]:
-        """Return the current intraday (MIS) net position, or None."""
+        """Return the current delivery (CNC) net position, or None."""
         symbol = _nse_symbol(ticker)
         try:
             positions = self.kite.positions()
             for pos in positions.get("net", []):
-                if pos["tradingsymbol"] == symbol and pos["product"] == "MIS":
+                if pos["tradingsymbol"] == symbol and pos["product"] == "CNC":
                     return pos
             return None
         except Exception:
@@ -203,7 +203,7 @@ class KiteBroker:
 
     def place_market_order(self, ticker: str, qty: int, side: str, slippage_pct: float = 0.1) -> Optional[str]:
         """
-        Place an NSE intraday (MIS) limit order with a small slippage buffer.
+        Place an NSE delivery (CNC) limit order with a small slippage buffer.
         Zerodha API does not allow market orders without market protection,
         so we use a limit order priced slightly above LTP (BUY) or below (SELL).
         side: 'BUY' or 'SELL'
@@ -236,7 +236,7 @@ class KiteBroker:
                 tradingsymbol=symbol,
                 transaction_type=tx,
                 quantity=qty,
-                product=KiteConnect.PRODUCT_MIS,
+                product=KiteConnect.PRODUCT_CNC,
                 order_type=KiteConnect.ORDER_TYPE_LIMIT,
                 price=limit_price,
             )
