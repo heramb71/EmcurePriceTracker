@@ -40,6 +40,8 @@ AUTHORIZED           = os.getenv("TWILIO_WHATSAPP_TO", "").replace("whatsapp:", 
 TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN    = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "")
+TELEGRAM_TOKEN       = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID     = os.getenv("TELEGRAM_CHAT_ID", "")
 HEALTH_API_KEY    = os.getenv("HEALTH_API_KEY", "")
 KITE_API_KEY      = os.getenv("KITE_API_KEY", "")
 KITE_API_SECRET   = os.getenv("KITE_API_SECRET", "")
@@ -312,10 +314,28 @@ def health():
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _start_telegram_bot() -> None:
+    """Start the Telegram command poller in a daemon thread, if configured."""
+    if not TELEGRAM_TOKEN:
+        return
+    import threading
+    from src.telegram_bot import run_command_bot
+
+    t = threading.Thread(
+        target=run_command_bot,
+        args=(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, _HANDLERS),
+        daemon=True,
+    )
+    t.start()
+    print(f"   Telegram command bot: ON (chat_id={TELEGRAM_CHAT_ID or 'any'})")
+
+
 if __name__ == "__main__":
     port = int(os.getenv("BOT_PORT", "5001"))
-    print(f"\n🤖 {TICKER} WhatsApp Trade Bot")
+    print(f"\n🤖 {TICKER} Trade Bot")
     print(f"   Listening on http://localhost:{port}/whatsapp")
-    print(f"   Authorized number: {AUTHORIZED or 'all'}")
+    print(f"   WhatsApp authorized number: {AUTHORIZED or 'all'}")
+    print(f"   Telegram: {'configured' if TELEGRAM_TOKEN else 'OFF'}")
     print(f"   Commands: BUY <price>, SELL, STATUS, HELP\n")
+    _start_telegram_bot()
     app.run(host="127.0.0.1", port=port, debug=False)

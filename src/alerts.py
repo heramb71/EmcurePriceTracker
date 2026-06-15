@@ -27,6 +27,8 @@ def _interpolate_prob(target_pct: float, probs: dict) -> int:
 
 
 def send_alert(token: str, chat_id: str, message: str) -> bool:
+    """Send a Telegram message. Falls back to plain text if Markdown fails to
+    parse (stray * / _ in dynamic content), so a message is never dropped."""
     try:
         import requests
 
@@ -35,6 +37,13 @@ def send_alert(token: str, chat_id: str, message: str) -> bool:
             url,
             json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"},
             timeout=10,
+        )
+        if resp.status_code == 200:
+            return True
+        # Markdown parse errors return 400 — retry as plain text.
+        logger.warning("Telegram Markdown send failed (%s); retrying plain", resp.status_code)
+        resp = requests.post(
+            url, json={"chat_id": chat_id, "text": message}, timeout=10
         )
         return resp.status_code == 200
     except Exception:
