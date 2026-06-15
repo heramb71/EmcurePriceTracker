@@ -43,6 +43,7 @@ from src.predictor import (
     format_eod_summary,
 )
 from src.trade_manager import check_and_mark, format_target_alert
+from src.state import load_state, save_state
 from main import _refresh
 
 logging.basicConfig(
@@ -379,8 +380,11 @@ def _dispatch_alerts(
                     msg += f"\n📋 Order placed  id={order_id}"
                     logger.warning("AUTO-TRADE BUY  qty=%d  order_id=%s", qty, order_id)
                 else:
-                    msg += "\n⚠️ ORDER FAILED — please execute manually!"
-                    logger.error("AUTO-TRADE BUY FAILED  qty=%d", qty)
+                    msg += "\n⚠️ Order failed — rolling back position state."
+                    logger.error("AUTO-TRADE BUY FAILED  qty=%d — rolling back state", qty)
+                    state = load_state()
+                    state["position"] = None
+                    save_state(state)
 
         elif event_type == "partial":
             msg = format_partial_alert(
