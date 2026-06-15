@@ -1,0 +1,44 @@
+%% System architecture — EmcurePriceTracker
+%% Render: https://mermaid.live  or  mmdc -i architecture.mmd -o architecture.svg
+flowchart TB
+    User(["You"])
+
+    subgraph Sources["Data Sources"]
+        YF["yfinance<br/>EMCURE / BTC / ETH<br/>(15-min delayed)"]
+        CG["CoinGecko<br/>(crypto fallback)"]
+        KITE["Zerodha Kite<br/>live LTP · orders · holdings"]
+    end
+
+    subgraph Services["Oracle Cloud — systemd services"]
+        TRACKER["emcure-tracker<br/>main_headless.py<br/>(equity engine)"]
+        CRYPTO["crypto-tracker<br/>crypto_headless.py<br/>(BTC/ETH, 7 days/wk)"]
+        BOT["emcure-bot<br/>bot_server.py<br/>Flask + Telegram poller"]
+    end
+
+    subgraph State["Runtime state (gitignored)"]
+        SS["strategy_state.json<br/>(auto-trade)"]
+        TS["trade_state.json<br/>(manual)"]
+        KT["kite_token.json"]
+    end
+
+    subgraph Channels["Alert channels"]
+        TG["Telegram<br/>primary · no cap"]
+        WA["WhatsApp / Twilio<br/>best-effort · 50/day cap"]
+    end
+
+    YF --> TRACKER
+    YF --> CRYPTO
+    CG -. fallback .-> CRYPTO
+    KITE <--> TRACKER
+    KITE --> KT
+
+    TRACKER <--> SS
+    TRACKER --> TG & WA
+    CRYPTO --> TG & WA
+
+    BOT <--> TS
+    BOT --> SS
+    BOT <--> KITE
+    BOT --> TG & WA
+
+    User <-->|"commands: STATUS/CRYPTO/BUY/SELL/TOKEN"| TG
