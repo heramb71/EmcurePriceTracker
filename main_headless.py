@@ -387,18 +387,19 @@ def _dispatch_alerts(
                     save_state(state)
 
         elif event_type == "partial":
+            reason = payload.get("reason", "t1_hit")
             msg = format_partial_alert(
-                ticker, payload["position"], payload["price"], payload["pnl"]
+                ticker, payload["position"], payload["price"], payload["pnl"], reason
             )
             if broker:
                 qty = payload["position"]["qty"] - payload["position"]["qty_remaining"]
                 order_id = broker.place_market_order(ticker, qty, "SELL")
                 if order_id:
                     msg += f"\n📋 Order placed  id={order_id}"
-                    logger.warning("AUTO-TRADE SELL (partial)  qty=%d  order_id=%s", qty, order_id)
+                    logger.warning("AUTO-TRADE SELL (%s)  qty=%d  order_id=%s", reason, qty, order_id)
                 else:
                     msg += "\n⚠️ SELL ORDER FAILED — please execute manually!"
-                    logger.error("AUTO-TRADE SELL (partial) FAILED  qty=%d", qty)
+                    logger.error("AUTO-TRADE SELL (%s) FAILED  qty=%d", reason, qty)
 
         elif event_type == "close":
             msg = format_position_close_alert(ticker, payload["trade"], payload["reason"])

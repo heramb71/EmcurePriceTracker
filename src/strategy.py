@@ -133,11 +133,15 @@ def compute_position_size(
     if qty <= 0:
         return None
 
-    t1 = entry + rr * risk_per_share
+    t1 = entry + 10.0
+    t2 = entry + 20.0
+    t3 = entry + 25.0
     return {
         "entry": round(entry, 2),
         "sl": round(sl, 2),
         "t1": round(t1, 2),
+        "t2": round(t2, 2),
+        "t3": round(t3, 2),
         "qty": qty,
         "risk_per_share": round(risk_per_share, 2),
         "risk_amount": round(qty * risk_per_share, 2),
@@ -163,29 +167,37 @@ def manage_position(
     Inspect the current price + Supertrend and return the next action.
 
     Priority order:
-      1. Stop hit       → exit_full   (reason: stop_hit)
-      2. Supertrend flip → exit_full  (reason: supertrend_exit)
-      3. T1 hit, partial not booked → exit_partial (reason: t1_hit)
-      4. None — hold
+      1. Stop hit        → exit_full    (reason: stop_hit)
+      2. Supertrend flip → exit_full    (reason: supertrend_exit)
+      3. T3 hit          → exit_partial (reason: t3_hit)
+      4. T2 hit          → exit_partial (reason: t2_hit)
+      5. T1 hit          → exit_partial (reason: t1_hit)
+      6. None — hold
     """
     if not position:
         return None
 
-    sl = float(position["sl"])
-    t1 = float(position["t1"])
-    partial_booked = bool(position.get("partial_booked"))
+    sl  = float(position["sl"])
+    t1  = float(position["t1"])
+    t2  = float(position.get("t2", position["t1"] + 10.0))
+    t3  = float(position.get("t3", position["t1"] + 15.0))
+    t1_booked = bool(position.get("partial_booked"))
+    t2_booked = bool(position.get("t2_booked"))
+    t3_booked = bool(position.get("t3_booked"))
 
     if price <= sl:
         return {"action": "exit_full", "reason": "stop_hit", "price": price}
 
     if supertrend_value > 0 and (price < supertrend_value or supertrend_direction == -1):
-        return {
-            "action": "exit_full",
-            "reason": "supertrend_exit",
-            "price": price,
-        }
+        return {"action": "exit_full", "reason": "supertrend_exit", "price": price}
 
-    if not partial_booked and price >= t1:
+    if not t3_booked and price >= t3:
+        return {"action": "exit_partial", "reason": "t3_hit", "price": price}
+
+    if not t2_booked and price >= t2:
+        return {"action": "exit_partial", "reason": "t2_hit", "price": price}
+
+    if not t1_booked and price >= t1:
         return {"action": "exit_partial", "reason": "t1_hit", "price": price}
 
     return None

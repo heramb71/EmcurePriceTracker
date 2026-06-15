@@ -294,21 +294,42 @@ def format_position_open_alert(
     )
 
 
-def format_partial_alert(ticker: str, position: dict, exit_price: float, pnl: float) -> str:
-    """WhatsApp message when T1 is hit and 50% is booked."""
+def format_partial_alert(
+    ticker: str, position: dict, exit_price: float, pnl: float, reason: str = "t1_hit"
+) -> str:
+    """WhatsApp message when a target is hit and 1/3 is booked."""
     qty_booked    = position["qty"] - position["qty_remaining"]
     qty_remaining = position["qty_remaining"]
-    breakeven     = position["sl"]
     sign          = "+" if pnl >= 0 else ""
 
-    return (
-        f"💰 *First Target Hit — {ticker}*\n\n"
-        f"Sold {qty_booked} shares at ₹{exit_price:,.2f}\n"
-        f"Profit booked: {sign}₹{pnl:,.0f} ✅\n\n"
-        f"Still holding {qty_remaining} shares.\n"
-        f"Stop loss moved to ₹{breakeven:,.2f} (breakeven — no loss possible now).\n"
-        f"Waiting for more upside."
-    )
+    label_map = {"t1_hit": "First", "t2_hit": "Second", "t3_hit": "Final"}
+    label     = label_map.get(reason, "Target")
+    emoji_map = {"t1_hit": "🎯", "t2_hit": "🎯🎯", "t3_hit": "🏆"}
+    emoji     = emoji_map.get(reason, "💰")
+
+    lines = [
+        f"{emoji} *{label} Target Hit — {ticker}*",
+        "",
+        f"Sold {qty_booked} shares at ₹{exit_price:,.2f}",
+        f"Profit booked: {sign}₹{pnl:,.0f} ✅",
+        "",
+    ]
+
+    if reason == "t1_hit":
+        lines += [
+            f"Still holding {qty_remaining} shares.",
+            f"Stop loss moved to ₹{position['sl']:,.2f} (breakeven — no loss possible now).",
+            f"Next targets: ₹{position.get('t2', exit_price + 10):,.2f} (+₹20)  ·  ₹{position.get('t3', exit_price + 15):,.2f} (+₹25)",
+        ]
+    elif reason == "t2_hit":
+        lines += [
+            f"Still holding {qty_remaining} shares.",
+            f"Final target: ₹{position.get('t3', exit_price + 5):,.2f} (+₹25)",
+        ]
+    else:
+        lines.append(f"All targets hit! Consider exiting remaining {qty_remaining} shares.")
+
+    return "\n".join(lines)
 
 
 def format_position_close_alert(

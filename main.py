@@ -250,13 +250,14 @@ def _refresh(ticker: str, news_snapshot: dict | None = None) -> dict:
         )
         if action:
             if action["action"] == "exit_partial":
-                state, partial_pnl = book_partial(state, action["price"])
+                state, partial_pnl = book_partial(state, action["price"], action["reason"])
                 events.append(
                     (
                         "partial",
                         {
                             "price": action["price"],
                             "pnl": partial_pnl,
+                            "reason": action["reason"],
                             "position": dict(state["position"]),
                         },
                     )
@@ -616,7 +617,8 @@ def main() -> None:
                     )
                 elif event_type == "partial":
                     msg = format_partial_alert(
-                        TICKER, payload["position"], payload["price"], payload["pnl"]
+                        TICKER, payload["position"], payload["price"], payload["pnl"],
+                        payload.get("reason", "t1_hit"),
                     )
                 elif event_type == "close":
                     msg = format_position_close_alert(
