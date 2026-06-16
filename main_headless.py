@@ -141,10 +141,12 @@ def _dispatch_alerts(
             send_alert(tg_token, tg_chat_id, msg)
 
     # ── Holiday alert (9:00–9:14 AM, once per day) ───────────────────────────
-    if wa_ready and now_t.hour == 9 and now_t.minute < 15:
+    if now_t.hour == 9 and now_t.minute < 15:
         holiday_key = f"holiday_{now_t.date()}"
         if holiday_key not in last_alerted and is_market_holiday(now_t.date()):
-            _wa(format_holiday_alert(ticker, now_t.date()))
+            msg = format_holiday_alert(ticker, now_t.date())
+            _wa(msg)
+            _tg(msg)
             last_alerted[holiday_key]                   = now_t
             last_alerted[f"pre_open_{now_t.date()}"]    = now_t
             last_alerted[f"post_open_{now_t.date()}"]   = now_t
@@ -153,7 +155,7 @@ def _dispatch_alerts(
             return  # no further alerts on holidays
 
     # ── Pre-open briefing (9:00–9:14 AM, once per day) ───────────────────────
-    if wa_ready and now_t.hour == 9 and now_t.minute < 15:
+    if now_t.hour == 9 and now_t.minute < 15:
         pre_key = f"pre_open_{now_t.date()}"
         if pre_key not in last_alerted:
             q   = data.get("quote", {})
@@ -172,11 +174,12 @@ def _dispatch_alerts(
                 now             = now_t,
             )
             _wa(msg)
+            _tg(msg)
             last_alerted[pre_key] = now_t
             logger.info("Pre-open briefing sent")
 
     # ── Post-open update (9:20–9:59 AM, once per day) ────────────────────────
-    if wa_ready and now_t.hour == 9 and now_t.minute >= 20:
+    if now_t.hour == 9 and now_t.minute >= 20:
         post_key = f"post_open_{now_t.date()}"
         if post_key not in last_alerted:
             q    = data.get("quote", {})
@@ -194,11 +197,12 @@ def _dispatch_alerts(
                 now           = now_t,
             )
             _wa(msg)
+            _tg(msg)
             last_alerted[post_key] = now_t
             logger.info("Post-open update sent")
 
     # ── EOD summary (3:30–3:59 PM, once per day) ─────────────────────────────
-    if wa_ready and now_t.hour == 15 and now_t.minute >= 30:
+    if now_t.hour == 15 and now_t.minute >= 30:
         eod_key = f"eod_{now_t.date()}"
         if eod_key not in last_alerted:
             q   = data.get("quote", {})
@@ -220,13 +224,15 @@ def _dispatch_alerts(
                 now          = now_t,
             )
             _wa(msg)
+            _tg(msg)
             last_alerted[eod_key] = now_t
             logger.info("EOD summary sent")
 
     # ── Intraday entry signal (BUY / STRONG_BUY) ─────────────────────────────
     intra_sig = data.get("intra_signal", {})
     if intra_sig.get("action") in ("BUY", "STRONG_BUY"):
-        sig_key  = f"intra_{intra_sig['action']}"
+        # Key is date-scoped so a service restart never re-fires within the same day
+        sig_key  = f"intra_{intra_sig['action']}_{now_t.date()}"
         last_t   = last_alerted.get(sig_key)
         too_soon = last_t and (datetime.now(_IST) - last_t).total_seconds() < 900
         if not too_soon:
@@ -279,6 +285,7 @@ def _dispatch_alerts(
                     f"```\n"
                 )
             _wa(intra_msg)
+            _tg(intra_msg)
             last_alerted[sig_key] = datetime.now(_IST)
             logger.info("Intraday signal alert sent: %s", intra_sig["action"])
 
@@ -292,12 +299,13 @@ def _dispatch_alerts(
         for hit in hits:
             msg = format_target_alert(ticker, hit, cur_price)
             _wa(msg)
+            _tg(msg)
             logger.info("Target hit alert sent: %s", hit.get("label"))
 
     # ── Time-based exit alert ─────────────────────────────────────────────────
     time_act = data.get("time_action")
-    if time_act and wa_ready:
-        ta_key   = f"time_{time_act['action']}"
+    if time_act:
+        ta_key   = f"time_{time_act['action']}_{now_t.date()}"
         last_t   = last_alerted.get(ta_key)
         too_soon = last_t and (datetime.now(_IST) - last_t).total_seconds() < 3600
         if not too_soon:
@@ -308,14 +316,21 @@ def _dispatch_alerts(
             if time_act["action"] == "tighten_stop":
                 ta_msg += f"\nNew stop: ₹{time_act.get('new_sl', 0):,.2f}"
             _wa(ta_msg)
+            _tg(ta_msg)
             last_alerted[ta_key] = datetime.now(_IST)
             logger.info("Time-based exit alert sent: %s", time_act["action"])
 
-    # ── Sentiment shift alert ─────────────────────────────────────────────────
+    # ── Sentiment shift alert (60-min cooldown to prevent repeat sends) ───────
     shift_alert = (data.get("news_snapshot") or {}).get("shift_alert")
     if shift_alert:
-        _wa(shift_alert)
-        logger.info("Sentiment shift alert sent")
+        shift_key = f"sentiment_shift_{now_t.date()}"
+        last_t    = last_alerted.get(shift_key)
+        too_soon  = last_t and (datetime.now(_IST) - last_t).total_seconds() < 3600
+        if not too_soon:
+            _wa(shift_alert)
+            _tg(shift_alert)
+            last_alerted[shift_key] = datetime.now(_IST)
+            logger.info("Sentiment shift alert sent")
 
     # ── Strong score alert (existing behaviour) ───────────────────────────────
     score_result = data.get("score_result")
