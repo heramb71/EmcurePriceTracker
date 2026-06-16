@@ -48,7 +48,7 @@ EmcurePriceTracker/
 │   ├── predictor.py         # Trade confidence predictor + WhatsApp message formatters
 │   ├── sentiment.py         # FinBERT sentiment (VADER fallback) + Google News RSS
 │   ├── scoring.py           # HMM market regime + combined signal scorer
-│   ├── alerts.py            # Telegram + WhatsApp (Twilio) alert dispatcher
+│   ├── alerts.py            # ntfy + Telegram + WhatsApp (Twilio) alert dispatcher
 │   ├── dashboard.py         # Rich terminal UI panels
 │   ├── trade_manager.py     # Manual trade state (T1/T2/T3/SL tracking)
 │   └── news_monitor.py      # Background news polling thread
@@ -117,10 +117,20 @@ TWILIO_AUTH_TOKEN=
 TWILIO_WHATSAPP_FROM=+14155238886
 TWILIO_WHATSAPP_TO=+91XXXXXXXXXX
 
-TELEGRAM_TOKEN=           # Optional
+TELEGRAM_TOKEN=           # Optional (blocked in India — server still sends)
 TELEGRAM_CHAT_ID=         # Optional
+
+NTFY_BASE_URL=http://127.0.0.1:2586   # Self-hosted ntfy — primary push channel
+NTFY_TOPIC=               # Set to enable ntfy; leave blank to disable
+NTFY_TOKEN=               # ntfy access token (tk_...)
+
 HEADLESS=true             # Set true on server
 ```
+
+**Alert channels (all additive — every alert fans out to each one configured):**
+- **ntfy** (`NTFY_TOPIC` set) — self-hosted push on the Oracle VM, primary channel; works where Telegram is blocked. iPhone receives via ntfy's `upstream-base-url: https://ntfy.sh` APNs relay.
+- **WhatsApp** (Twilio creds + `WHATSAPP_ENABLED=true`) — works in India; 50/day trial cap.
+- **Telegram** (`TELEGRAM_TOKEN`+`TELEGRAM_CHAT_ID`) — server still sends, but blocked on the user's phone in India.
 
 ---
 

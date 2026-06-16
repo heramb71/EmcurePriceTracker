@@ -49,6 +49,7 @@ from src.broker import KiteBroker
 from src.alerts import (
     send_alert,
     send_whatsapp_alert,
+    send_ntfy_alert,
     format_alert,
     format_whatsapp_alert,
     should_alert,
@@ -168,6 +169,18 @@ def _whatsapp_enabled() -> bool:
     return os.getenv("WHATSAPP_ENABLED", "true").lower() == "true"
 
 
+def _ntfy_cfg() -> tuple[str, str, str]:
+    """ntfy publish target (base_url, topic, token) read from env. base_url
+    defaults to the local self-hosted server so publishing never leaves the box.
+    The channel is 'ready' iff a topic is set. Read via a helper (like
+    _whatsapp_enabled) so no creds need threading through _dispatch_alerts."""
+    return (
+        os.getenv("NTFY_BASE_URL", "http://127.0.0.1:2586"),
+        os.getenv("NTFY_TOPIC", ""),
+        os.getenv("NTFY_TOKEN", ""),
+    )
+
+
 def _retry_send(send_fn, *args) -> bool:
     """Call a send function, retrying once after a short delay. Returns True if
     either attempt succeeds. Centralises the 'never drop a message on a single
@@ -197,16 +210,27 @@ def _dispatch_alerts(
     """Send all scheduled and event-driven alerts to every configured channel."""
     wa_ready     = _whatsapp_enabled() and bool(wa_sid and wa_token and wa_from and wa_to)
     tg_ready     = bool(tg_token and tg_chat_id)
-    notify_ready = wa_ready or tg_ready
+    ntfy_base, ntfy_topic, ntfy_token = _ntfy_cfg()
+    ntfy_ready   = bool(ntfy_topic)
+    notify_ready = wa_ready or tg_ready or ntfy_ready
+
+    def _ntfy(msg: str) -> None:
+        if ntfy_ready and not _retry_send(
+            send_ntfy_alert, ntfy_base, ntfy_topic, ntfy_token, msg
+        ):
+            logger.error("ntfy alert dropped after retry (%d chars)", len(msg))
 
     def _tg(msg: str) -> None:
         if tg_ready and not _retry_send(send_alert, tg_token, tg_chat_id, msg):
             logger.error("Telegram alert dropped after retry (%d chars)", len(msg))
 
     def _notify(msg: str) -> None:
-        """Fan out to every configured channel: WhatsApp (best-effort — Twilio
-        trial caps at 50 msgs/day) and Telegram (no cap). Each leg retries once
-        and logs loudly if it still fails, so a dropped alert is never silent."""
+        """Fan out to every configured channel: ntfy (self-hosted push, no cap),
+        WhatsApp (best-effort — Twilio trial caps at 50 msgs/day) and Telegram
+        (no cap, but unreachable on a phone where Telegram is blocked). Each leg
+        retries once and logs loudly if it still fails, so a dropped alert is
+        never silent."""
+        _ntfy(msg)
         if wa_ready and not _retry_send(send_whatsapp_alert, wa_sid, wa_token, wa_from, wa_to, msg):
             logger.error("WhatsApp alert dropped after retry (%d chars)", len(msg))
         if tg_ready and not _retry_send(send_alert, tg_token, tg_chat_id, msg):
@@ -512,8 +536,9 @@ def _dispatch_alerts(
             _tg(format_alert(ticker, score_result, quote))
             alerted = True
 
-        if wa_ready:
-            wa_msg = format_whatsapp_alert(
+        # WhatsApp and ntfy share the same plain-text body (built once).
+        if wa_ready or ntfy_ready:
+            plain_msg = format_whatsapp_alert(
                 ticker,
                 score_result,
                 quote,
@@ -524,7 +549,12 @@ def _dispatch_alerts(
                 pnl_unrealised  = data.get("pnl_unrealised", 0.0),
                 halted_reason   = data.get("halted_reason", ""),
             )
-            if _retry_send(send_whatsapp_alert, wa_sid, wa_token, wa_from, wa_to, wa_msg):
+            if ntfy_ready:
+                if _retry_send(send_ntfy_alert, ntfy_base, ntfy_topic, ntfy_token, plain_msg):
+                    alerted = True
+                else:
+                    logger.error("ntfy alert dropped after retry (%d chars)", len(plain_msg))
+            if wa_ready and _retry_send(send_whatsapp_alert, wa_sid, wa_token, wa_from, wa_to, plain_msg):
                 alerted = True
 
         if alerted:
@@ -533,7 +563,7 @@ def _dispatch_alerts(
 
 
 def _broadcast(msg: str) -> None:
-    """Send a system/auth message to every configured channel (WhatsApp +
+    """Send a system/auth message to every configured channel (ntfy + WhatsApp +
     Telegram). Reads creds from env so it works anywhere without plumbing."""
     wa_sid   = os.getenv("TWILIO_ACCOUNT_SID", "")
     wa_token = os.getenv("TWILIO_AUTH_TOKEN", "")
@@ -541,6 +571,9 @@ def _broadcast(msg: str) -> None:
     wa_to    = os.getenv("TWILIO_WHATSAPP_TO", "")
     tg_token   = os.getenv("TELEGRAM_TOKEN", "")
     tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    ntfy_base, ntfy_topic, ntfy_token = _ntfy_cfg()
+    if ntfy_topic and not _retry_send(send_ntfy_alert, ntfy_base, ntfy_topic, ntfy_token, msg):
+        logger.error("ntfy broadcast dropped after retry (%d chars)", len(msg))
     if _whatsapp_enabled() and wa_sid and wa_token and wa_from and wa_to:
         if not _retry_send(send_whatsapp_alert, wa_sid, wa_token, wa_from, wa_to, msg):
             logger.error("WhatsApp broadcast dropped after retry (%d chars)", len(msg))
@@ -610,6 +643,11 @@ def main() -> None:
         wa_status = "DISABLED — check .env"
     logger.info("WhatsApp alerts: %s", wa_status)
     logger.info("Telegram alerts: %s", "enabled" if (tg_token and tg_chat_id) else "DISABLED — check .env")
+    _ntfy_base, _ntfy_topic, _ = _ntfy_cfg()
+    logger.info(
+        "ntfy alerts: %s",
+        f"enabled (topic={_ntfy_topic} via {_ntfy_base})" if _ntfy_topic else "DISABLED — set NTFY_TOPIC",
+    )
 
     # ── Kite auto-trading ────────────────────────────────────────────────────
     # The "ACTIVE" announcement is persisted (not just kept in last_alerted)

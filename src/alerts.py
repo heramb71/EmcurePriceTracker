@@ -79,6 +79,53 @@ def send_whatsapp_alert(
         return False
 
 
+def send_ntfy_alert(
+    base_url: str,
+    topic: str,
+    token: str,
+    message: str,
+    title: str = "",
+) -> bool:
+    """Publish a message to a (self-hosted) ntfy topic.
+
+    base_url is where this process publishes — typically the local ntfy server
+    (http://127.0.0.1:2586), so the publish never leaves the box. Subscribers
+    (the phone app) reach the same server publicly via nginx.
+
+    The body is sent as UTF-8 (emojis fine). Markdown is NOT enabled, so the
+    existing *bold* markers render literally, consistent with WhatsApp. The
+    optional Title rides in an HTTP header, which must be ASCII — non-ASCII
+    characters are stripped to avoid an encoding error.
+
+    Returns False on any failure (never raises), same contract as the other
+    senders.
+    """
+    try:
+        import requests
+
+        headers: dict[str, str] = {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        if title:
+            ascii_title = title.encode("ascii", "ignore").decode().strip()
+            if ascii_title:
+                headers["Title"] = ascii_title
+
+        resp = requests.post(
+            f"{base_url.rstrip('/')}/{topic}",
+            data=message.encode("utf-8"),
+            headers=headers,
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return True
+        logger.warning("ntfy send failed (%s)  topic=%s", resp.status_code, topic)
+        return False
+    except Exception:
+        logger.exception("send_ntfy_alert failed  topic=%s", topic)
+        return False
+
+
 def format_alert(ticker: str, score_result: dict, quote: dict) -> str:
     """Markdown-formatted alert for Telegram (*bold* syntax)."""
     signal = score_result["signal"]

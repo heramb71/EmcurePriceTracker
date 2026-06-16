@@ -40,7 +40,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from src.alerts import send_whatsapp_alert, send_alert
+from src.alerts import send_whatsapp_alert, send_alert, send_ntfy_alert
 from crypto.data import fetch_crypto_daily, fetch_crypto_quote, fetch_usd_inr
 from crypto.messages import (
     format_evening_summary,
@@ -101,14 +101,21 @@ def main() -> None:
     wa_to    = os.getenv("TWILIO_WHATSAPP_TO", "")
     tg_token   = os.getenv("TELEGRAM_TOKEN", "")
     tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    ntfy_base  = os.getenv("NTFY_BASE_URL", "http://127.0.0.1:2586")
+    ntfy_topic = os.getenv("NTFY_TOPIC", "")
+    ntfy_token = os.getenv("NTFY_TOKEN", "")
 
-    wa_ready = bool(wa_sid and wa_token and wa_from and wa_to)
-    tg_ready = bool(tg_token and tg_chat_id)
-    if not (wa_ready or tg_ready):
-        logger.error("No alert channel configured — set TWILIO_* and/or TELEGRAM_* in .env")
+    wa_ready   = bool(wa_sid and wa_token and wa_from and wa_to)
+    tg_ready   = bool(tg_token and tg_chat_id)
+    ntfy_ready = bool(ntfy_topic)
+    if not (wa_ready or tg_ready or ntfy_ready):
+        logger.error("No alert channel configured — set NTFY_TOPIC, TWILIO_*, and/or TELEGRAM_* in .env")
 
     def _wa(msg: str) -> None:
-        """Fan out to every configured channel: WhatsApp (50/day cap) + Telegram."""
+        """Fan out to every configured channel: ntfy (self-hosted push) +
+        WhatsApp (50/day cap) + Telegram."""
+        if ntfy_ready:
+            send_ntfy_alert(ntfy_base, ntfy_topic, ntfy_token, msg)
         if wa_ready:
             send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to, msg)
         if tg_ready:
@@ -116,7 +123,10 @@ def main() -> None:
 
     last_alerted: dict = {}
     logger.info("Crypto tracker started. Refresh every %ds.", _REFRESH_SECONDS)
-    logger.info("WhatsApp alerts: %s", "enabled" if wa_ready else "DISABLED")
+    logger.info("ntfy: %s | WhatsApp: %s | Telegram: %s",
+                "on" if ntfy_ready else "off",
+                "on" if wa_ready else "off",
+                "on" if tg_ready else "off")
 
     while True:
         now = _now_ist()

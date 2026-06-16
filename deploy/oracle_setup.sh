@@ -11,6 +11,7 @@
 #        emcure-tracker  — headless alert engine (main_headless.py)
 #        emcure-bot      — WhatsApp webhook server (bot_server.py)
 #   7. Configures nginx reverse proxy + Let's Encrypt SSL (via DuckDNS domain)
+#   7b. Installs a self-hosted ntfy push server at ntfy.<domain> (alert channel)
 #   8. Configures logrotate
 #
 # Usage (run as root on the Oracle VM):
@@ -271,6 +272,69 @@ if "Strict-Transport-Security" not in content:
     print("HSTS header added.")
 PYEOF
 nginx -t && systemctl reload nginx
+
+# ── 12b. ntfy push server (self-hosted alert channel) ────────────────────────
+step "ntfy push server"
+NTFY_DOMAIN="ntfy.${DOMAIN}"
+
+# Install ntfy from the official apt repo (arm64 + amd64).
+mkdir -p /etc/apt/keyrings
+curl -fsSL https://archive.heckel.io/apt/pubkey.txt | gpg --dearmor -o /etc/apt/keyrings/archive.heckel.io.gpg
+cat > /etc/apt/sources.list.d/archive.heckel.io.list <<'EOF'
+deb [arch=amd64,arm64 signed-by=/etc/apt/keyrings/archive.heckel.io.gpg] https://archive.heckel.io/apt debian main
+EOF
+apt-get update -qq
+apt-get install -y -qq ntfy
+
+# Server config: publish locally, expose via nginx, relay iOS push via ntfy.sh,
+# private by default (only authenticated users can read/publish).
+cat > /etc/ntfy/server.yml <<EOF
+base-url: "https://${NTFY_DOMAIN}"
+listen-http: "127.0.0.1:2586"
+upstream-base-url: "https://ntfy.sh"
+behind-proxy: true
+auth-file: "/var/lib/ntfy/user.db"
+auth-default-access: "deny-all"
+EOF
+systemctl enable ntfy >/dev/null 2>&1 || true
+systemctl restart ntfy
+
+# Nginx vhost for the ntfy subdomain — streaming-friendly (SSE), no buffering.
+NTFY_NGINX="/etc/nginx/sites-available/ntfy"
+cat > "$NTFY_NGINX" <<EOF
+server {
+    listen 80;
+    server_name ${NTFY_DOMAIN};
+
+    location / {
+        proxy_pass         http://127.0.0.1:2586;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              \$host;
+        proxy_set_header   X-Real-IP         \$remote_addr;
+        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto \$scheme;
+        proxy_connect_timeout 3m;
+        proxy_send_timeout    3m;
+        proxy_read_timeout    3m;
+        proxy_buffering       off;
+        proxy_request_buffering off;
+    }
+}
+EOF
+ln -sf "$NTFY_NGINX" /etc/nginx/sites-enabled/ntfy
+nginx -t && systemctl reload nginx
+
+# Cert for the subdomain (DuckDNS resolves *.${DOMAIN} to this host). Non-fatal:
+# if it fails (e.g. DNS not yet propagated) the rest of setup still completes.
+certbot --nginx -d "$NTFY_DOMAIN" --non-interactive --agree-tos -m "admin@${DOMAIN}" --redirect \
+    || info "ntfy cert request failed — re-run later: certbot --nginx -d ${NTFY_DOMAIN}"
+
+info "ntfy installed at https://${NTFY_DOMAIN}"
+info "NEXT (manual): create a login + token, then set NTFY_TOPIC/NTFY_TOKEN in .env:"
+info "  sudo ntfy user add --role=admin emcure        # choose a password"
+info "  sudo ntfy access emcure 'emcure-*' rw"
+info "  sudo ntfy token add emcure                     # copy the tk_... token"
+info "  then set NTFY_TOPIC=emcure-alerts and NTFY_TOKEN=tk_... in /opt/emcure/.env"
 
 # ── 13. SSH hardening ─────────────────────────────────────────────────────────
 step "SSH hardening"
