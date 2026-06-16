@@ -549,6 +549,26 @@ def main() -> None:
     logger.info("WhatsApp alerts: %s", "enabled" if wa_ready else "DISABLED — check .env")
 
     # ── Kite auto-trading ────────────────────────────────────────────────────
+    # The "ACTIVE" announcement is persisted (not just kept in last_alerted)
+    # so a process restart later the same day — crash, deploy, OOM — doesn't
+    # re-send it. last_alerted is in-memory only and resets on every restart.
+    today_str = _now_ist().date().isoformat()
+    persisted_state = load_state()
+    already_announced_today = persisted_state.get("kite_announced_date") == today_str
+
+    def _announce_active_once() -> None:
+        nonlocal already_announced_today
+        logger.warning("Kite auto-trading ACTIVE")
+        if already_announced_today:
+            logger.info("Startup announcement already sent today — suppressing duplicate")
+            return
+        _broadcast(
+            f"✅ {ticker} auto-trading ACTIVE\n"
+            f"Capital: ₹{capital:,.0f}  Risk: {risk_pct}%/trade")
+        persisted_state["kite_announced_date"] = today_str
+        save_state(persisted_state)
+        already_announced_today = True
+
     broker: KiteBroker | None = None
     if os.getenv("KITE_AUTO_TRADE", "false").lower() == "true":
         kite_key    = os.getenv("KITE_API_KEY", "")
@@ -564,10 +584,7 @@ def main() -> None:
                 if _kite_user and _kite_pass and _kite_totp:
                     logger.info("Kite not authenticated — attempting auto_login")
                     if broker.auto_login(_kite_user, _kite_pass, _kite_totp):
-                        logger.warning("Kite auto_login succeeded — auto-trading ACTIVE")
-                        _broadcast(
-                            f"✅ {ticker} auto-trading ACTIVE\n"
-                            f"Capital: ₹{capital:,.0f}  Risk: {risk_pct}%/trade")
+                        _announce_active_once()
                     else:
                         logger.error("Kite auto_login failed — sending login URL")
                         _broadcast(
@@ -585,10 +602,7 @@ def main() -> None:
                         f"Then reply: TOKEN <request_token>")
                     broker = None
             else:
-                logger.warning("Kite already authenticated — auto-trading ACTIVE")
-                _broadcast(
-                    f"✅ {ticker} auto-trading ACTIVE\n"
-                    f"Capital: ₹{capital:,.0f}  Risk: {risk_pct}%/trade")
+                _announce_active_once()
 
     # ── Startup reconciliation ─────────────────────────────────────────────────
     # Detect divergence between what the bot believes it holds (strategy_state)
@@ -597,82 +611,91 @@ def main() -> None:
         _reconcile_on_startup(broker, ticker, wa_sid, wa_token, wa_from, wa_to, wa_ready)
 
     while True:
-        now = _now_ist()
+        # The whole iteration is guarded: a transient data/network error here
+        # must not crash the process. An unhandled exception would propagate
+        # out of main(), and since systemd has Restart=on-failure, the service
+        # would restart from scratch every 30s — re-running the startup block
+        # above and re-sending the "auto-trading ACTIVE" announcement on loop.
+        try:
+            now = _now_ist()
 
-        # Pre-open briefing window is before market open — run outside market hours
-        pre_open_window = now.hour == 9 and now.minute < 15
-        if pre_open_window and not is_market_holiday(now.date()):
-            # Re-authenticate Kite at start of each trading day, with a once-per-day
-            # heartbeat so a silent auth failure can't leave trading dead unnoticed.
-            auth_key = f"auth_{now.date()}"
-            if broker and auth_key not in last_alerted:
-                _kite_user = os.getenv("KITE_USER_ID", "")
-                _kite_pass = os.getenv("KITE_PASSWORD", "")
-                _kite_totp = os.getenv("KITE_TOTP_SECRET", "")
-                authed = broker.is_authenticated()
-                if not authed and _kite_user and _kite_pass and _kite_totp:
-                    authed = broker.auto_login(_kite_user, _kite_pass, _kite_totp)
+            # Pre-open briefing window is before market open — run outside market hours
+            pre_open_window = now.hour == 9 and now.minute < 15
+            if pre_open_window and not is_market_holiday(now.date()):
+                # Re-authenticate Kite at start of each trading day, with a once-per-day
+                # heartbeat so a silent auth failure can't leave trading dead unnoticed.
+                auth_key = f"auth_{now.date()}"
+                if broker and auth_key not in last_alerted:
+                    _kite_user = os.getenv("KITE_USER_ID", "")
+                    _kite_pass = os.getenv("KITE_PASSWORD", "")
+                    _kite_totp = os.getenv("KITE_TOTP_SECRET", "")
+                    authed = broker.is_authenticated()
+                    if not authed and _kite_user and _kite_pass and _kite_totp:
+                        authed = broker.auto_login(_kite_user, _kite_pass, _kite_totp)
 
-                if authed:
-                    logger.warning("Kite auth OK for %s — auto-trading ACTIVE", now.date())
-                    _broadcast(
-                        f"✅ {ticker} auto-trading ACTIVE today\n"
-                        f"Capital: ₹{capital:,.0f}  Risk: {risk_pct}%/trade")
-                else:
-                    logger.error("Kite daily re-auth FAILED — auto-trading suspended")
-                    _broadcast(
-                        f"🚨 {ticker} auto-trading is DOWN today\n\n"
-                        f"Kite login failed — no orders will be placed. "
-                        f"Reply TOKEN <request_token> after logging in:\n"
-                        f"{broker.login_url()}")
-                    broker = None
-                last_alerted[auth_key] = now
+                    if authed:
+                        logger.warning("Kite auth OK for %s — auto-trading ACTIVE", now.date())
+                        _broadcast(
+                            f"✅ {ticker} auto-trading ACTIVE today\n"
+                            f"Capital: ₹{capital:,.0f}  Risk: {risk_pct}%/trade")
+                    else:
+                        logger.error("Kite daily re-auth FAILED — auto-trading suspended")
+                        _broadcast(
+                            f"🚨 {ticker} auto-trading is DOWN today\n\n"
+                            f"Kite login failed — no orders will be placed. "
+                            f"Reply TOKEN <request_token> after logging in:\n"
+                            f"{broker.login_url()}")
+                        broker = None
+                    last_alerted[auth_key] = now
 
-            pre_key = f"pre_open_{now.date()}"
-            if pre_key not in last_alerted:
-                data = _refresh(ticker)
-                if data:
-                    _dispatch_alerts(
-                        ticker, data, now, last_alerted,
-                        wa_sid, wa_token, wa_from, wa_to,
-                        capital, risk_rupees, risk_pct, tg_token, tg_chat_id,
-                        broker=broker,
-                    )
-                time.sleep(60)
+                pre_key = f"pre_open_{now.date()}"
+                if pre_key not in last_alerted:
+                    data = _refresh(ticker)
+                    if data:
+                        _dispatch_alerts(
+                            ticker, data, now, last_alerted,
+                            wa_sid, wa_token, wa_from, wa_to,
+                            capital, risk_rupees, risk_pct, tg_token, tg_chat_id,
+                            broker=broker,
+                        )
+                    time.sleep(60)
+                    continue
+
+            if not _is_market_open():
+                _sleep_until_market_open()
                 continue
 
-        if not _is_market_open():
-            _sleep_until_market_open()
-            continue
+            started_at = _now_ist()
+            data = _refresh(ticker, broker=broker)
 
-        started_at = _now_ist()
-        data = _refresh(ticker, broker=broker)
+            if not data:
+                logger.warning("No market data returned, retrying in %ss...", refresh_seconds)
+            else:
+                quote        = data.get("quote") or {}
+                score_result = data.get("score_result") or {}
+                price        = quote.get("price") or 0.0
+                signal       = score_result.get("signal", "Hold")
+                score        = score_result.get("score", 0.0)
 
-        if not data:
-            logger.warning("No market data returned, retrying in %ss...", refresh_seconds)
-        else:
-            quote        = data.get("quote") or {}
-            score_result = data.get("score_result") or {}
-            price        = quote.get("price") or 0.0
-            signal       = score_result.get("signal", "Hold")
-            score        = score_result.get("score", 0.0)
+                logger.info(
+                    "%s @ ₹%.2f | signal=%s | score=%.2f | change=%+.2f%%",
+                    ticker, price, signal, score, quote.get("change_pct", 0.0),
+                )
 
-            logger.info(
-                "%s @ ₹%.2f | signal=%s | score=%.2f | change=%+.2f%%",
-                ticker, price, signal, score, quote.get("change_pct", 0.0),
-            )
+                _dispatch_alerts(
+                    ticker, data, _now_ist(), last_alerted,
+                    wa_sid, wa_token, wa_from, wa_to,
+                    capital, risk_rupees, risk_pct, tg_token, tg_chat_id,
+                    broker=broker,
+                )
 
-            _dispatch_alerts(
-                ticker, data, _now_ist(), last_alerted,
-                wa_sid, wa_token, wa_from, wa_to,
-                capital, risk_rupees, risk_pct, tg_token, tg_chat_id,
-                broker=broker,
-            )
-
-        elapsed   = (_now_ist() - started_at).total_seconds()
-        sleep_for = max(1, refresh_seconds - int(elapsed))
-        logger.debug("Sleeping for %s seconds", sleep_for)
-        time.sleep(sleep_for)
+            elapsed   = (_now_ist() - started_at).total_seconds()
+            sleep_for = max(1, refresh_seconds - int(elapsed))
+            logger.debug("Sleeping for %s seconds", sleep_for)
+            time.sleep(sleep_for)
+        except Exception:
+            logger.exception("Unhandled error in main loop — retrying in %ss", refresh_seconds)
+            time.sleep(refresh_seconds)
 
 
 if __name__ == "__main__":
