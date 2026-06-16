@@ -1,14 +1,20 @@
 %% Daily lifecycle (IST)
 %% Render: https://mermaid.live
+%% Each loop iteration dispatches by clock window, independent of the
+%% market-open gate — so the 09:00 pre-open and 15:30 EOD messages fire even
+%% though the market is only "open" 09:15–15:30.
 flowchart TD
     S["Services run 24/7 on Oracle Cloud"]
 
-    subgraph Equity["emcure-tracker (Mon–Fri, NSE hours)"]
-        PRE["09:00–09:14<br/>daily Kite re-auth + ✅/🚨 heartbeat<br/>+ pre-open briefing + startup reconcile"]
-        OPEN["09:15–15:30<br/>poll every 5 min:<br/>signal → guards → confirm-fill → manage exits"]
-        EOD["15:30–15:59<br/>EOD summary"]
-        SLP["sleep until next session"]
-        PRE --> OPEN --> EOD --> SLP --> PRE
+    subgraph Equity["emcure-tracker (Mon–Fri)"]
+        PRE["09:00–09:14 · pre-open window<br/>Kite re-auth + ✅/🚨 heartbeat · startup reconcile<br/>pre-open briefing (trading day)"]
+        HOL["holiday → closed-market notice"]
+        OPEN["09:15–15:30 · market open<br/>poll every 5 min:<br/>signal → guards → confirm-fill → manage exits"]
+        EOD["15:30–15:59 · post-close window<br/>EOD summary (outside the open gate)"]
+        SLP["sleep to next session<br/>(skips weekends + holidays)"]
+        PRE -->|holiday| HOL --> SLP
+        PRE -->|trading day| OPEN --> EOD --> SLP
+        SLP --> PRE
     end
 
     subgraph Crypto["crypto-tracker (every day, incl. weekends)"]
@@ -20,4 +26,4 @@ flowchart TD
     S --> Equity
     S --> Crypto
 
-    legend["Session counters (losses, P&L, halt) reset on a new trading day.<br/>NSE holidays skip all equity trading for the day."]
+    legend["Pre-open (09:00) and EOD (15:30) run in dedicated clock windows,<br/>outside the 09:15–15:30 market-open gate.<br/>Session counters (losses, P&L, halt) reset on a new trading day."]
