@@ -1,0 +1,100 @@
+name: Fetch logs from Oracle Cloud
+
+# Manual-only. Click "Run workflow", pick a day + service, then download the
+# "emcure-logs" artifact from the run and feed it to Claude for analysis.
+# Reuses the same SSH secrets as deploy.yml. Read-only on the server.
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Day to fetch (YYYY-MM-DD). Leave blank for today (UTC)."
+        required: false
+        type: string
+        default: ""
+      service:
+        description: "Which log(s) to fetch"
+        required: true
+        type: choice
+        options:
+          - tracker
+          - bot
+          - both
+        default: tracker
+      lines:
+        description: "Fallback: last N lines if nothing matches the date"
+        required: false
+        type: string
+        default: "500"
+
+# Don't collide with a deploy; separate group from deploy-production.
+concurrency:
+  group: fetch-logs
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch logs over SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SVC: ${{ inputs.service }}
+          DAY: ${{ inputs.date }}
+          LINES: ${{ inputs.lines }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_PRIVATE_KEY:-}" ] || [ -z "${SSH_HOST:-}" ] || [ -z "${SSH_USER:-}" ]; then
+            echo "::error::Missing required secrets: SSH_PRIVATE_KEY, SSH_HOST, SSH_USER."
+            exit 1
+          fi
+          PORT="${SSH_PORT:-22}"
+          DAY="${DAY:-}"
+          [ -z "$DAY" ] && DAY="$(date -u +%F)"
+          LINES="${LINES:-500}"
+
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -p "$PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          OUT="$RUNNER_TEMP/logs"
+          mkdir -p "$OUT"
+
+          case "$SVC" in
+            tracker) FILES="tracker" ;;
+            bot)     FILES="bot" ;;
+            both)    FILES="tracker bot" ;;
+            *)       echo "::error::Unknown service: $SVC"; exit 1 ;;
+          esac
+
+          for f in $FILES; do
+            echo "Fetching $f.log for $DAY (fallback: last $LINES lines)"
+            # Remote prints the day's matching lines; falls back to tail if none match.
+            # stderr (ssh/connection noise) stays in the Actions console, not the artifact.
+            ssh -i ~/.ssh/id_deploy -p "$PORT" \
+              -o StrictHostKeyChecking=accept-new \
+              "$SSH_USER@$SSH_HOST" \
+              "LOG=/var/log/emcure/$f.log; \
+               if [ ! -f \"\$LOG\" ]; then echo \"(no such log: \$LOG)\"; exit 0; fi; \
+               M=\$(grep -F \"$DAY\" \"\$LOG\" || true); \
+               if [ -n \"\$M\" ]; then printf '%s\n' \"\$M\"; \
+               else echo \"(no lines matched $DAY — showing last $LINES lines)\"; tail -n $LINES \"\$LOG\"; fi" \
+              > "$OUT/$f-$DAY.log" || echo "::warning::ssh failed for $f"
+            echo "  -> $(wc -l < "$OUT/$f-$DAY.log") lines captured"
+          done
+
+      - name: Upload log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emcure-logs
+          path: ${{ runner.temp }}/logs/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Cleanup key
+        if: always()
+        run: rm -f ~/.ssh/id_deploy
