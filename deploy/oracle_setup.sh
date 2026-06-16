@@ -291,14 +291,21 @@ info "fail2ban active."
 
 # ── 15. Logrotate ─────────────────────────────────────────────────────────────
 cat > /etc/logrotate.d/emcure <<EOF
+# systemd writes these via StandardOutput=append: (O_APPEND) and does NOT reopen
+# the file after a rename, so 'create' would leave the services writing to the
+# rotated inode forever (active log keeps growing under the .1 name; fresh log
+# stays empty). copytruncate truncates in place instead — the running services
+# keep writing with no restart, and O_APPEND resumes cleanly at offset 0.
+# maxsize caps a runaway loop between daily runs.
 ${LOG_DIR}/*.log ${LOG_DIR}/*.err {
     daily
     rotate 30
+    maxsize 50M
     compress
     delaycompress
     missingok
     notifempty
-    create 0640 emcure emcure
+    copytruncate
 }
 EOF
 
