@@ -94,23 +94,44 @@ def _is_market_open(now: datetime | None = None) -> bool:
     return _MARKET_OPEN <= t <= _MARKET_CLOSE
 
 
+def _next_wake_target(now: datetime) -> datetime:
+    """Datetime the service should wake at while the market is closed.
+
+    - In the 10-min run-up to a trading-day open → that day's 09:15 open, so the
+      loop proceeds straight into the session.
+    - Otherwise → 10 min before the next weekday, non-holiday open.
+
+    Pure (no sleep) so the weekend/holiday-skip logic can be unit-tested. The old
+    version skipped only weekends and returned immediately whenever the wake
+    point was in the past — on a holiday that turned the caller into a 100% CPU
+    busy-loop from 09:05 to 15:30.
+    """
+    open_today = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    wake_today = open_today - _WAKEUP_BEFORE_OPEN
+    tradable_today = now.weekday() < 5 and not is_market_holiday(now.date())
+
+    if tradable_today and now < open_today:
+        return open_today if now >= wake_today else wake_today
+
+    candidate = open_today + timedelta(days=1)
+    while candidate.weekday() >= 5 or is_market_holiday(candidate.date()):
+        candidate += timedelta(days=1)
+    return candidate - _WAKEUP_BEFORE_OPEN
+
+
 def _sleep_until_market_open() -> None:
-    """Sleep until 10 minutes before the next NSE market open, then return."""
+    """Sleep until the next NSE trading session (skipping weekends + holidays).
+
+    Always sleeps at least 30s so a wake target in the recent past can never
+    spin the loop.
+    """
     now = _now_ist()
-    candidate = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    if now.time() >= _MARKET_CLOSE or now.weekday() >= 5:
-        candidate += timedelta(days=1)
-    while candidate.weekday() >= 5:
-        candidate += timedelta(days=1)
-    wake_at = candidate - _WAKEUP_BEFORE_OPEN
-    if wake_at <= now:
-        return
-    sleep_secs = (wake_at - now).total_seconds()
-    next_open_str = candidate.strftime("%Y-%m-%d %H:%M IST")
+    target = _next_wake_target(now)
+    sleep_secs = max(30.0, (target - now).total_seconds())
     logger.info(
-        "Market closed. Sleeping %.0f min until %s (waking 10 min early).",
+        "Market closed. Sleeping %.0f min until %s.",
         sleep_secs / 60,
-        next_open_str,
+        target.strftime("%Y-%m-%d %H:%M IST"),
     )
     time.sleep(sleep_secs)
 
@@ -136,6 +157,27 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+_SEND_RETRY_DELAY_S = 2
+
+
+def _whatsapp_enabled() -> bool:
+    """WhatsApp delivery is opt-out via WHATSAPP_ENABLED. Twilio's trial caps at
+    50 msgs/day, and every alert fans out to both channels — so when running
+    Telegram-only, set WHATSAPP_ENABLED=false to stop burning that cap (which
+    silently drops the messages that land over the limit)."""
+    return os.getenv("WHATSAPP_ENABLED", "true").lower() == "true"
+
+
+def _retry_send(send_fn, *args) -> bool:
+    """Call a send function, retrying once after a short delay. Returns True if
+    either attempt succeeds. Centralises the 'never drop a message on a single
+    transient network blip / timeout' policy for every alert channel."""
+    if send_fn(*args):
+        return True
+    time.sleep(_SEND_RETRY_DELAY_S)
+    return send_fn(*args)
+
+
 def _dispatch_alerts(
     ticker: str,
     data: dict,
@@ -153,21 +195,22 @@ def _dispatch_alerts(
     broker: "KiteBroker | None" = None,
 ) -> None:
     """Send all scheduled and event-driven alerts to every configured channel."""
-    wa_ready     = bool(wa_sid and wa_token and wa_from and wa_to)
+    wa_ready     = _whatsapp_enabled() and bool(wa_sid and wa_token and wa_from and wa_to)
     tg_ready     = bool(tg_token and tg_chat_id)
     notify_ready = wa_ready or tg_ready
 
     def _tg(msg: str) -> None:
-        if tg_ready:
-            send_alert(tg_token, tg_chat_id, msg)
+        if tg_ready and not _retry_send(send_alert, tg_token, tg_chat_id, msg):
+            logger.error("Telegram alert dropped after retry (%d chars)", len(msg))
 
     def _notify(msg: str) -> None:
         """Fan out to every configured channel: WhatsApp (best-effort — Twilio
-        trial caps at 50 msgs/day) and Telegram (no cap)."""
-        if wa_ready:
-            send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to, msg)
-        if tg_ready:
-            send_alert(tg_token, tg_chat_id, msg)
+        trial caps at 50 msgs/day) and Telegram (no cap). Each leg retries once
+        and logs loudly if it still fails, so a dropped alert is never silent."""
+        if wa_ready and not _retry_send(send_whatsapp_alert, wa_sid, wa_token, wa_from, wa_to, msg):
+            logger.error("WhatsApp alert dropped after retry (%d chars)", len(msg))
+        if tg_ready and not _retry_send(send_alert, tg_token, tg_chat_id, msg):
+            logger.error("Telegram alert dropped after retry (%d chars)", len(msg))
 
     # ── Supertrend strategy events (sent FIRST, isolated) ────────────────────
     # Orders are placed AND confirmed inside _refresh(), which also persists the
@@ -481,7 +524,7 @@ def _dispatch_alerts(
                 pnl_unrealised  = data.get("pnl_unrealised", 0.0),
                 halted_reason   = data.get("halted_reason", ""),
             )
-            if send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to, wa_msg):
+            if _retry_send(send_whatsapp_alert, wa_sid, wa_token, wa_from, wa_to, wa_msg):
                 alerted = True
 
         if alerted:
@@ -498,10 +541,12 @@ def _broadcast(msg: str) -> None:
     wa_to    = os.getenv("TWILIO_WHATSAPP_TO", "")
     tg_token   = os.getenv("TELEGRAM_TOKEN", "")
     tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
-    if wa_sid and wa_token and wa_from and wa_to:
-        send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to, msg)
+    if _whatsapp_enabled() and wa_sid and wa_token and wa_from and wa_to:
+        if not _retry_send(send_whatsapp_alert, wa_sid, wa_token, wa_from, wa_to, msg):
+            logger.error("WhatsApp broadcast dropped after retry (%d chars)", len(msg))
     if tg_token and tg_chat_id:
-        send_alert(tg_token, tg_chat_id, msg)
+        if not _retry_send(send_alert, tg_token, tg_chat_id, msg):
+            logger.error("Telegram broadcast dropped after retry (%d chars)", len(msg))
 
 
 def _reconcile_on_startup(
@@ -555,8 +600,16 @@ def main() -> None:
     risk_rupees = float(os.getenv("RISK_RUPEES", "4500"))
     risk_pct    = float(os.getenv("RISK_PCT", "1.0"))
 
-    wa_ready = bool(wa_sid and wa_token and wa_from and wa_to)
-    logger.info("WhatsApp alerts: %s", "enabled" if wa_ready else "DISABLED — check .env")
+    wa_creds = bool(wa_sid and wa_token and wa_from and wa_to)
+    wa_ready = _whatsapp_enabled() and wa_creds
+    if wa_ready:
+        wa_status = "enabled"
+    elif wa_creds:
+        wa_status = "DISABLED via WHATSAPP_ENABLED=false (Telegram-only)"
+    else:
+        wa_status = "DISABLED — check .env"
+    logger.info("WhatsApp alerts: %s", wa_status)
+    logger.info("Telegram alerts: %s", "enabled" if (tg_token and tg_chat_id) else "DISABLED — check .env")
 
     # ── Kite auto-trading ────────────────────────────────────────────────────
     # The "ACTIVE" announcement is persisted (not just kept in last_alerted)
@@ -629,13 +682,18 @@ def main() -> None:
         try:
             now = _now_ist()
 
-            # Pre-open briefing window is before market open — run outside market hours
+            # The pre-open briefing and the holiday notice both run in the 9:00–9:14
+            # window — before the open — so they live here, outside the
+            # _is_market_open() gate below.
             pre_open_window = now.hour == 9 and now.minute < 15
-            if pre_open_window and not is_market_holiday(now.date()):
-                # Re-authenticate Kite at start of each trading day, with a once-per-day
-                # heartbeat so a silent auth failure can't leave trading dead unnoticed.
+            if pre_open_window:
+                is_holiday = is_market_holiday(now.date())
+
+                # Re-authenticate Kite at the start of each trading day (skip on
+                # holidays — no orders are placed, and a holiday must not consume
+                # the daily auth heartbeat that flags a silent login failure).
                 auth_key = f"auth_{now.date()}"
-                if broker and auth_key not in last_alerted:
+                if broker and not is_holiday and auth_key not in last_alerted:
                     _kite_user = os.getenv("KITE_USER_ID", "")
                     _kite_pass = os.getenv("KITE_PASSWORD", "")
                     _kite_totp = os.getenv("KITE_TOTP_SECRET", "")
@@ -658,8 +716,35 @@ def main() -> None:
                         broker = None
                     last_alerted[auth_key] = now
 
+                # On a holiday, _dispatch_alerts sends the closed-market notice and
+                # returns early; on a trading day it sends the pre-open briefing.
                 pre_key = f"pre_open_{now.date()}"
-                if pre_key not in last_alerted:
+                hol_key = f"holiday_{now.date()}"
+                if pre_key not in last_alerted and hol_key not in last_alerted:
+                    data = _refresh(ticker)
+                    # The holiday notice needs no market data, so dispatch even if
+                    # the fetch came back empty — it must still go out.
+                    if data or is_holiday:
+                        _dispatch_alerts(
+                            ticker, data or {}, now, last_alerted,
+                            wa_sid, wa_token, wa_from, wa_to,
+                            capital, risk_rupees, risk_pct, tg_token, tg_chat_id,
+                            broker=broker,
+                        )
+                    if is_holiday:
+                        _sleep_until_market_open()   # nothing else to do today
+                    else:
+                        time.sleep(60)
+                    continue
+
+            # The EOD summary fires after the 15:30 close, so — exactly like the
+            # pre-open block — it must run outside the _is_market_open() gate.
+            # It previously lived only inside the market-open path, where the
+            # 15:30–15:59 window never overlaps an open market, so it never fired.
+            post_close_window = now.hour == 15 and now.minute >= 30
+            if post_close_window and now.weekday() < 5 and not is_market_holiday(now.date()):
+                eod_key = f"eod_{now.date()}"
+                if eod_key not in last_alerted:
                     data = _refresh(ticker)
                     if data:
                         _dispatch_alerts(
