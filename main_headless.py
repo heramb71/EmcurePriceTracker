@@ -261,7 +261,8 @@ def _dispatch_alerts(
     # ── Intraday entry signal (BUY / STRONG_BUY) ─────────────────────────────
     intra_sig = data.get("intra_signal", {})
     if intra_sig.get("action") in ("BUY", "STRONG_BUY"):
-        sig_key  = f"intra_{intra_sig['action']}"
+        # Key is date-scoped so a service restart never re-fires within the same day
+        sig_key  = f"intra_{intra_sig['action']}_{now_t.date()}"
         last_t   = last_alerted.get(sig_key)
         too_soon = last_t and (datetime.now(_IST) - last_t).total_seconds() < 900
         if not too_soon:
@@ -342,7 +343,7 @@ def _dispatch_alerts(
     # ── Time-based exit alert ─────────────────────────────────────────────────
     time_act = data.get("time_action")
     if time_act and notify_ready:
-        ta_key   = f"time_{time_act['action']}"
+        ta_key   = f"time_{time_act['action']}_{now_t.date()}"
         last_t   = last_alerted.get(ta_key)
         too_soon = last_t and (datetime.now(_IST) - last_t).total_seconds() < 3600
         if not too_soon:
@@ -356,11 +357,16 @@ def _dispatch_alerts(
             last_alerted[ta_key] = datetime.now(_IST)
             logger.info("Time-based exit alert sent: %s", time_act["action"])
 
-    # ── Sentiment shift alert ─────────────────────────────────────────────────
+    # ── Sentiment shift alert (60-min cooldown to prevent repeat sends) ───────
     shift_alert = (data.get("news_snapshot") or {}).get("shift_alert")
-    if shift_alert:
-        _notify(shift_alert)
-        logger.info("Sentiment shift alert sent")
+    if shift_alert and notify_ready:
+        shift_key = f"sentiment_shift_{now_t.date()}"
+        last_t    = last_alerted.get(shift_key)
+        too_soon  = last_t and (datetime.now(_IST) - last_t).total_seconds() < 3600
+        if not too_soon:
+            _notify(shift_alert)
+            last_alerted[shift_key] = datetime.now(_IST)
+            logger.info("Sentiment shift alert sent")
 
     # ── Strong score alert (existing behaviour) ───────────────────────────────
     score_result = data.get("score_result")

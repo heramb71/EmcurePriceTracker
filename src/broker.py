@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time as _time
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+
+_IST = ZoneInfo("Asia/Kolkata")
 
 # Limit-order price offset from LTP: BUY slightly above, SELL slightly below,
 # so the order fills promptly without a true market order (which Kite rejects
@@ -377,3 +381,88 @@ class KiteBroker:
         if result["status"] != "COMPLETE" or result["filled_qty"] < qty:
             return None
         return result
+
+
+# ── Execution readiness check ────────────────────────────────────────────────
+
+def kite_execution_status(today: date | None = None) -> dict:
+    """
+    Return a dict describing whether Kite auto-trading will execute today.
+
+    Keys:
+      will_execute  bool       — True only when ALL checks pass
+      checks        list[dict] — per-check result with name/ok/detail
+      summary       str        — human-readable one-liner
+    """
+    if today is None:
+        today = datetime.now(_IST).date()
+
+    checks: list[dict] = []
+
+    # 1. KITE_AUTO_TRADE env var
+    auto_trade = os.getenv("KITE_AUTO_TRADE", "false").lower() == "true"
+    checks.append({
+        "name":   "KITE_AUTO_TRADE",
+        "ok":     auto_trade,
+        "detail": "enabled" if auto_trade else "disabled (set KITE_AUTO_TRADE=true)",
+    })
+
+    # 2. API credentials present
+    has_creds = bool(os.getenv("KITE_API_KEY") and os.getenv("KITE_API_SECRET"))
+    checks.append({
+        "name":   "API credentials",
+        "ok":     has_creds,
+        "detail": "KITE_API_KEY + KITE_API_SECRET set" if has_creds
+                  else "KITE_API_KEY or KITE_API_SECRET missing",
+    })
+
+    # 3. Weekday check
+    is_weekday = today.weekday() < 5
+    day_name = today.strftime("%A")
+    checks.append({
+        "name":   "Trading day (weekday)",
+        "ok":     is_weekday,
+        "detail": day_name if is_weekday else f"{day_name} — market closed on weekends",
+    })
+
+    # 4. NSE holiday check
+    try:
+        from src.holidays import is_market_holiday, get_holiday_name
+        is_holiday = is_market_holiday(today)
+    except Exception:
+        is_holiday = False
+    not_holiday = not is_holiday
+    checks.append({
+        "name":   "Not an NSE holiday",
+        "ok":     not_holiday,
+        "detail": "trading day" if not_holiday else get_holiday_name(today),
+    })
+
+    # 5. Kite token valid for today
+    tf = _token_file()
+    token_ok = False
+    token_detail = "token file missing"
+    try:
+        if tf.exists():
+            data = json.loads(tf.read_text())
+            if data.get("date") == str(today):
+                token_ok = True
+                token_detail = f"valid token for {today}"
+            else:
+                token_detail = f"stale token (from {data.get('date', '?')})"
+    except Exception as exc:
+        token_detail = f"error reading token: {exc}"
+    checks.append({
+        "name":   "Kite token (today)",
+        "ok":     token_ok,
+        "detail": token_detail,
+    })
+
+    will_execute = all(c["ok"] for c in checks)
+    failing = [c["name"] for c in checks if not c["ok"]]
+    if will_execute:
+        summary = f"✅ Kite bot WILL execute trades on {today}"
+    else:
+        summary = f"❌ Kite bot will NOT execute on {today} — {', '.join(failing)}"
+
+    return {"will_execute": will_execute, "checks": checks, "summary": summary}
