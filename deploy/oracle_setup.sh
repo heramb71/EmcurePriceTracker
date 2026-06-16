@@ -277,14 +277,13 @@ nginx -t && systemctl reload nginx
 step "ntfy push server"
 NTFY_DOMAIN="ntfy.${DOMAIN}"
 
-# Install ntfy from the official apt repo (arm64 + amd64).
-mkdir -p /etc/apt/keyrings
-curl -fsSL https://archive.heckel.io/apt/pubkey.txt | gpg --dearmor -o /etc/apt/keyrings/archive.heckel.io.gpg
-cat > /etc/apt/sources.list.d/archive.heckel.io.list <<'EOF'
-deb [arch=amd64,arm64 signed-by=/etc/apt/keyrings/archive.heckel.io.gpg] https://archive.heckel.io/apt debian main
-EOF
-apt-get update -qq
-apt-get install -y -qq ntfy
+# Install ntfy from the official GitHub release .deb (matches the host arch).
+# (The apt mirror at archive.heckel.io is unreliable, so we pin to the release.)
+NTFY_ARCH="$(dpkg --print-architecture)"
+NTFY_VER="$(curl -fsSL https://api.github.com/repos/binwiederhier/ntfy/releases/latest | grep -oP '"tag_name":\s*"v\K[^"]+')"
+curl -fsSL -o /tmp/ntfy.deb "https://github.com/binwiederhier/ntfy/releases/download/v${NTFY_VER}/ntfy_${NTFY_VER}_linux_${NTFY_ARCH}.deb"
+apt-get install -y -qq /tmp/ntfy.deb
+rm -f /tmp/ntfy.deb
 
 # Server config: publish locally, expose via nginx, relay iOS push via ntfy.sh,
 # private by default (only authenticated users can read/publish).
