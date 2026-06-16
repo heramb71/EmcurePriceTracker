@@ -108,10 +108,125 @@ from src.state import (
     book_partial,
     close_position,
     check_circuit_breaker,
+    PARTIAL_DENOM,
 )
+from src.events import is_near_event
+
+logger = logging.getLogger(__name__)
 
 
-def _refresh(ticker: str, news_snapshot: dict | None = None) -> dict:
+def _sizing_at_fill(sizing: dict, fill_price: float, filled_qty: int, atr: float) -> dict:
+    """Recompute stop/targets off the ACTUAL fill price, keeping the filled qty."""
+    base = compute_position_size(CAPITAL, RISK_PCT, fill_price, atr) or dict(sizing)
+    corrected = dict(base)
+    corrected["entry"]        = round(float(fill_price), 2)
+    corrected["qty"]          = int(filled_qty)
+    corrected["capital_used"] = round(filled_qty * fill_price, 2)
+    corrected["risk_amount"]  = round(filled_qty * float(corrected.get("risk_per_share", 0.0)), 2)
+    return corrected
+
+
+def _execute_strategy(
+    state: dict,
+    ticker: str,
+    quote: dict,
+    st_last: dict,
+    buy_signal: dict,
+    sizing: dict | None,
+    atr: float,
+    halted: bool,
+    broker=None,
+    near_event: bool = False,
+) -> tuple[dict, list[tuple[str, dict]]]:
+    """
+    Run the Supertrend strategy step and return (state, events).
+
+    When a broker is supplied, the order is PLACED AND CONFIRMED before any
+    trade state is mutated, and the confirmed fill price drives the recorded
+    entry, targets, and P&L. When no broker is supplied (dashboard / paper
+    mode), the theoretical signal price is used as before.
+    """
+    events: list[tuple[str, dict]] = []
+    position = state.get("position")
+
+    if position:
+        action = manage_position(
+            position, quote["price"], st_last["supertrend"], st_last["direction"]
+        )
+        if not action:
+            return state, events
+
+        if action["action"] == "exit_partial":
+            qty_to_sell = max(1, int(position["qty_remaining"]) // PARTIAL_DENOM)
+            exit_price  = action["price"]
+            if broker:
+                fill = broker.place_order_and_confirm(ticker, qty_to_sell, "SELL")
+                if not fill:
+                    events.append(("exit_failed", {
+                        "side": "SELL", "qty": qty_to_sell, "reason": action["reason"],
+                    }))
+                    return state, events
+                exit_price = fill["fill_price"]
+            state, partial_pnl = book_partial(state, exit_price, action["reason"])
+            events.append(("partial", {
+                "price": exit_price,
+                "pnl": partial_pnl,
+                "reason": action["reason"],
+                "position": dict(state["position"]),
+            }))
+
+        elif action["action"] == "exit_full":
+            qty_to_sell = int(position["qty_remaining"])
+            exit_price  = action["price"]
+            if broker:
+                fill = broker.place_order_and_confirm(ticker, qty_to_sell, "SELL")
+                if not fill:
+                    events.append(("exit_failed", {
+                        "side": "SELL", "qty": qty_to_sell, "reason": action["reason"],
+                    }))
+                    return state, events
+                exit_price = fill["fill_price"]
+            state, _ = close_position(state, exit_price, action["reason"])
+            events.append(("close", {
+                "trade": state["journal"][-1],
+                "reason": action["reason"],
+            }))
+
+    elif not halted and buy_signal["triggered"] and sizing:
+        if near_event:
+            events.append(("event_blocked", {"ticker": ticker}))
+            return state, events
+        fill_sizing = sizing
+        if broker:
+            # Idempotency: the bot thinks it is flat — confirm the broker agrees
+            # before buying, so a missed save / restart can't double a position.
+            held = broker.held_qty(ticker)
+            if held:
+                events.append(("reconcile_warn", {"held": held}))
+                return state, events
+
+            # Funds guard: CNC needs full cash; never place an order we can't pay for.
+            funds = broker.available_funds()
+            if funds is not None and funds < sizing["capital_used"]:
+                events.append(("insufficient_funds", {
+                    "need": sizing["capital_used"], "have": funds, "qty": sizing["qty"],
+                }))
+                return state, events
+
+            fill = broker.place_order_and_confirm(ticker, sizing["qty"], "BUY")
+            if not fill:
+                events.append(("open_failed", {
+                    "side": "BUY", "qty": sizing["qty"],
+                }))
+                return state, events
+            fill_sizing = _sizing_at_fill(sizing, fill["fill_price"], fill["filled_qty"], atr)
+        state = open_position(state, ticker, fill_sizing, atr)
+        events.append(("open", {"sizing": fill_sizing, "buy_signal": buy_signal}))
+
+    return state, events
+
+
+def _refresh(ticker: str, news_snapshot: dict | None = None, broker=None) -> dict:
     """Fetch all market data and compute every signal. Returns a flat result dict."""
     df_daily = fetch_daily(ticker)
     if df_daily is None or df_daily.empty:
@@ -121,6 +236,19 @@ def _refresh(ticker: str, news_snapshot: dict | None = None) -> dict:
 
     # Prefer live quote (fresher price during market hours); fall back to daily
     quote = fetch_live_quote(ticker) or get_latest_quote(df_daily)
+
+    # When auto-trading, decide on Zerodha's real-time LTP instead of the
+    # ~15-min-delayed Yahoo price. Indicators still use daily history; only the
+    # current decision/management price is upgraded. Ignore a 0 (fetch failure).
+    if broker is not None:
+        try:
+            ltp = broker.get_ltp(ticker)
+            if ltp and ltp > 0:
+                quote = {**quote, "price": round(float(ltp), 2),
+                         "close": round(float(ltp), 2), "source": "kite_ltp"}
+        except Exception:
+            logger.warning("Kite LTP fetch failed; using delayed quote", exc_info=True)
+
     close = df_daily["close"]
 
     # Indicators
@@ -241,41 +369,17 @@ def _refresh(ticker: str, news_snapshot: dict | None = None) -> dict:
     state = reset_session_if_new_day(state)
     halted, halted_reason = check_circuit_breaker(state, CAPITAL, MAX_DAILY_LOSS_PCT)
 
-    events: list[tuple[str, dict]] = []
-    position = state.get("position")
+    # Only consult the (cached, once/day) earnings calendar when an entry is actually
+    # in play — flat, signalled, and not halted.
+    near_event = (
+        is_near_event(ticker)
+        if (not state.get("position") and buy_signal["triggered"] and not halted)
+        else False
+    )
 
-    if position:
-        action = manage_position(
-            position, quote["price"], st_last["supertrend"], st_last["direction"]
-        )
-        if action:
-            if action["action"] == "exit_partial":
-                state, partial_pnl = book_partial(state, action["price"])
-                events.append(
-                    (
-                        "partial",
-                        {
-                            "price": action["price"],
-                            "pnl": partial_pnl,
-                            "position": dict(state["position"]),
-                        },
-                    )
-                )
-            elif action["action"] == "exit_full":
-                state, total_pnl = close_position(state, action["price"], action["reason"])
-                events.append(
-                    (
-                        "close",
-                        {
-                            "trade": state["journal"][-1],
-                            "reason": action["reason"],
-                        },
-                    )
-                )
-    elif not halted and buy_signal["triggered"] and sizing:
-        state = open_position(state, ticker, sizing, atr)
-        events.append(("open", {"sizing": sizing, "buy_signal": buy_signal}))
-
+    state, events = _execute_strategy(
+        state, ticker, quote, st_last, buy_signal, sizing, atr, halted, broker, near_event
+    )
     save_state(state)
 
     position_now = state.get("position")
@@ -616,7 +720,8 @@ def main() -> None:
                     )
                 elif event_type == "partial":
                     msg = format_partial_alert(
-                        TICKER, payload["position"], payload["price"], payload["pnl"]
+                        TICKER, payload["position"], payload["price"], payload["pnl"],
+                        payload.get("reason", "t1_hit"),
                     )
                 elif event_type == "close":
                     msg = format_position_close_alert(

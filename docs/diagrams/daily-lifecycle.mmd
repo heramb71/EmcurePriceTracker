@@ -1,0 +1,23 @@
+%% Daily lifecycle (IST)
+%% Render: https://mermaid.live
+flowchart TD
+    S["Services run 24/7 on Oracle Cloud"]
+
+    subgraph Equity["emcure-tracker (Mon–Fri, NSE hours)"]
+        PRE["09:00–09:14<br/>daily Kite re-auth + ✅/🚨 heartbeat<br/>+ pre-open briefing + startup reconcile"]
+        OPEN["09:15–15:30<br/>poll every 5 min:<br/>signal → guards → confirm-fill → manage exits"]
+        EOD["15:30–15:59<br/>EOD summary"]
+        SLP["sleep until next session"]
+        PRE --> OPEN --> EOD --> SLP --> PRE
+    end
+
+    subgraph Crypto["crypto-tracker (every day, incl. weekends)"]
+        C8["08:00–08:14 morning summary"]
+        C20["20:00–20:14 evening summary"]
+        CI["intraday: RSI &lt;35 or &gt;68 (4h cooldown)"]
+    end
+
+    S --> Equity
+    S --> Crypto
+
+    legend["Session counters (losses, P&L, halt) reset on a new trading day.<br/>NSE holidays skip all equity trading for the day."]

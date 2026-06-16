@@ -11,10 +11,12 @@ For a systemd deployment, see deploy/emcure_price_tracker.service.
 
 import argparse
 import os
+import sys
 import time
 import logging
 from argparse import ArgumentParser
 from datetime import datetime, time as dtime, timedelta, timezone
+from pathlib import Path
 
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -22,6 +24,24 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _warn_if_env_world_readable() -> None:
+    """The .env holds the Kite password + TOTP secret (a full 2FA bypass).
+    Warn loudly if it is readable by group/others so it gets locked down."""
+    env_path = Path(".env")
+    try:
+        if not env_path.exists():
+            return
+        mode = env_path.stat().st_mode
+        if mode & 0o077:
+            logging.getLogger(__name__).warning(
+                ".env is group/world-readable (mode %o) — it holds Kite credentials. "
+                "Run: chmod 600 .env", mode & 0o777,
+            )
+    except Exception:
+        pass
+
 
 from src.sentiment import load_sentiment_model
 from src.holidays import is_market_holiday, format_holiday_alert
@@ -42,11 +62,14 @@ from src.predictor import (
     format_eod_summary,
 )
 from src.trade_manager import check_and_mark, format_target_alert
+from src.state import load_state, save_state
 from main import _refresh
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
+    stream=sys.stdout,
+    force=True,
 )
 logger = logging.getLogger("main_headless")
 
@@ -129,24 +152,28 @@ def _dispatch_alerts(
     tg_chat_id: str,
     broker: "KiteBroker | None" = None,
 ) -> None:
-    """Send all scheduled and event-driven WhatsApp alerts (mirrors main.py logic)."""
-    wa_ready = bool(wa_sid and wa_token and wa_from and wa_to)
-
-    def _wa(msg: str) -> None:
-        if wa_ready:
-            send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to, msg)
+    """Send all scheduled and event-driven alerts to every configured channel."""
+    wa_ready     = bool(wa_sid and wa_token and wa_from and wa_to)
+    tg_ready     = bool(tg_token and tg_chat_id)
+    notify_ready = wa_ready or tg_ready
 
     def _tg(msg: str) -> None:
-        if tg_token and tg_chat_id:
+        if tg_ready:
+            send_alert(tg_token, tg_chat_id, msg)
+
+    def _notify(msg: str) -> None:
+        """Fan out to every configured channel: WhatsApp (best-effort — Twilio
+        trial caps at 50 msgs/day) and Telegram (no cap)."""
+        if wa_ready:
+            send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to, msg)
+        if tg_ready:
             send_alert(tg_token, tg_chat_id, msg)
 
     # ── Holiday alert (9:00–9:14 AM, once per day) ───────────────────────────
-    if now_t.hour == 9 and now_t.minute < 15:
+    if notify_ready and now_t.hour == 9 and now_t.minute < 15:
         holiday_key = f"holiday_{now_t.date()}"
         if holiday_key not in last_alerted and is_market_holiday(now_t.date()):
-            msg = format_holiday_alert(ticker, now_t.date())
-            _wa(msg)
-            _tg(msg)
+            _notify(format_holiday_alert(ticker, now_t.date()))
             last_alerted[holiday_key]                   = now_t
             last_alerted[f"pre_open_{now_t.date()}"]    = now_t
             last_alerted[f"post_open_{now_t.date()}"]   = now_t
@@ -155,7 +182,7 @@ def _dispatch_alerts(
             return  # no further alerts on holidays
 
     # ── Pre-open briefing (9:00–9:14 AM, once per day) ───────────────────────
-    if now_t.hour == 9 and now_t.minute < 15:
+    if notify_ready and now_t.hour == 9 and now_t.minute < 15:
         pre_key = f"pre_open_{now_t.date()}"
         if pre_key not in last_alerted:
             q   = data.get("quote", {})
@@ -171,15 +198,16 @@ def _dispatch_alerts(
                 prior_losses    = data.get("prior_losses", 0),
                 sentiment_label = data.get("news_sent_label", "Neutral"),
                 sentiment_score = data.get("news_sent_score", 0.0),
+                indicators      = data.get("indicators", {}),
+                score_result    = data.get("score_result") or {},
                 now             = now_t,
             )
-            _wa(msg)
-            _tg(msg)
+            _notify(msg)
             last_alerted[pre_key] = now_t
             logger.info("Pre-open briefing sent")
 
     # ── Post-open update (9:20–9:59 AM, once per day) ────────────────────────
-    if now_t.hour == 9 and now_t.minute >= 20:
+    if notify_ready and now_t.hour == 9 and now_t.minute >= 20:
         post_key = f"post_open_{now_t.date()}"
         if post_key not in last_alerted:
             q    = data.get("quote", {})
@@ -194,15 +222,16 @@ def _dispatch_alerts(
                 capital       = capital,
                 risk_rupees   = risk_rupees,
                 prior_losses  = data.get("prior_losses", 0),
+                indicators    = data.get("indicators", {}),
+                score_result  = data.get("score_result") or {},
                 now           = now_t,
             )
-            _wa(msg)
-            _tg(msg)
+            _notify(msg)
             last_alerted[post_key] = now_t
             logger.info("Post-open update sent")
 
     # ── EOD summary (3:30–3:59 PM, once per day) ─────────────────────────────
-    if now_t.hour == 15 and now_t.minute >= 30:
+    if notify_ready and now_t.hour == 15 and now_t.minute >= 30:
         eod_key = f"eod_{now_t.date()}"
         if eod_key not in last_alerted:
             q   = data.get("quote", {})
@@ -221,10 +250,11 @@ def _dispatch_alerts(
                 prior_losses = data.get("prior_losses", 0),
                 day_pnl      = 0.0,
                 trades_today = 0,
+                indicators   = data.get("indicators", {}),
+                score_result = data.get("score_result") or {},
                 now          = now_t,
             )
-            _wa(msg)
-            _tg(msg)
+            _notify(msg)
             last_alerted[eod_key] = now_t
             logger.info("EOD summary sent")
 
@@ -245,47 +275,56 @@ def _dispatch_alerts(
             tier_emoji = {"A — HIGH": "🟢", "B — MODERATE": "🟡",
                           "C — LOW": "🟠", "SKIP": "🔴"}.get(pred.get("tier", ""), "⚪")
             _pb = lambda p, w=18: "█" * round(p / 100 * w) + "░" * (w - round(p / 100 * w))
-            action_label = intra_sig["action"].replace("_", " ")
             action_emoji = "🔔🔔" if intra_sig["action"] == "STRONG_BUY" else "🔔"
             trend_icon   = {"Upward": "📈", "Downward": "📉", "Choppy": "〰️"}.get(trend_7d, "📊")
             change_pct   = q.get("change_pct", 0)
             gap_val      = sma7_data.get("gap", 0)
+            price_now    = q.get("price", 0)
             r_t1 = pred.get("reach_t1", 0)
             r_t2 = pred.get("reach_t2", 0)
             r_t3 = pred.get("reach_t3", 0)
             r_st = pred.get("p_stop", 0)
-            intra_msg = (
-                f"{action_emoji} *{ticker}.NS — {action_label}*\n"
-                f"{intra_sig['reason']}\n"
-                f"\n"
-                f"Current  ₹{q.get('price', 0):,.2f}  "
-                f"({'+' if change_pct >= 0 else ''}{change_pct:.1f}%)\n"
-                f"SMA7     ₹{sma7_data.get('sma7', 0):,.2f}  (gap ₹{gap_val:+.0f})\n"
-                f"Trend    {trend_icon} {trend_7d}\n"
-                f"\n"
-                f"{tier_emoji} *Confidence {score}/100 — {pred.get('tier', '')}*\n"
-                f"```\n"
-                f"T1 +₹10  {_pb(r_t1)} {r_t1:.0f}%\n"
-                f"T2 +₹20  {_pb(r_t2)} {r_t2:.0f}%\n"
-                f"T3 +₹25  {_pb(r_t3)} {r_t3:.0f}%\n"
-                f"Stop     {_pb(r_st)} {r_st:.0f}%\n"
-                f"```\n"
-                f"Rec: {pred.get('target_rec', '')}  ·  EV ₹{pred.get('ev', 0):+,.0f}\n"
+
+            confidence_label = (
+                "High — strong setup 👍"  if score >= 75 else
+                "Medium — decent chance"  if score >= 55 else
+                "Low — be cautious"       if score >= 40 else
+                "Very low — consider skipping"
             )
+
+            intra_lines = [
+                f"{action_emoji} *Buy Signal — {ticker}*",
+                f"📉 Stock has dropped ₹{abs(gap_val):.0f} below its 7-day average",
+                f"This is the entry zone we were waiting for.",
+                "",
+                f"Current price: ₹{price_now:,.2f}  ({'+' if change_pct >= 0 else ''}{change_pct:.1f}% today)",
+                f"7-day average: ₹{sma7_data.get('sma7', 0):,.2f}",
+                f"Trend: {trend_icon} {trend_7d}",
+                "",
+                f"{tier_emoji} *Confidence: {confidence_label}*",
+                f"Chance of +₹10: {r_t1:.0f}%",
+                f"Chance of +₹20: {r_t2:.0f}%",
+                f"Chance of +₹25: {r_t3:.0f}%",
+                f"Chance of stop: {r_st:.0f}%",
+            ]
+
+            if pred.get("ev", 0) != 0:
+                ev_label = "expected profit" if pred["ev"] > 0 else "expected loss"
+                intra_lines.append(f"Expected outcome: ₹{pred['ev']:+,.0f} ({ev_label})")
+
             if rupee_lvls:
-                intra_msg += (
-                    f"\n📋 *Trade Plan*  (₹{capital:,.0f})\n"
-                    f"```\n"
-                    f"Qty    {rupee_lvls['qty']} sh @ ₹{rupee_lvls['entry']:,.2f}\n"
-                    f"SL     ₹{rupee_lvls['sl']:,.2f}  (-₹{rupee_lvls['sl_diff']:.0f})\n"
-                    f"T1     ₹{rupee_lvls['t1']:,.2f}  (+₹10)\n"
-                    f"T2     ₹{rupee_lvls['t2']:,.2f}  (+₹20) primary\n"
-                    f"T3     ₹{rupee_lvls['t3']:,.2f}  (+₹25) stretch\n"
-                    f"Max    ₹{rupee_lvls['max_risk']:,.0f} risk\n"
-                    f"```\n"
-                )
-            _wa(intra_msg)
-            _tg(intra_msg)
+                intra_lines += [
+                    "",
+                    f"📋 *Trade plan ({rupee_lvls['qty']} shares):*",
+                    f"Buy at:       ₹{rupee_lvls['entry']:,.2f}",
+                    f"Sell half at: ₹{rupee_lvls['t1']:,.2f}  (+₹10, profit ~₹{10 * rupee_lvls['qty']:,.0f})",
+                    f"Next target:  ₹{rupee_lvls['t2']:,.2f}  (+₹20, profit ~₹{20 * rupee_lvls['qty']:,.0f})",
+                    f"Stretch:      ₹{rupee_lvls['t3']:,.2f}  (+₹25, profit ~₹{25 * rupee_lvls['qty']:,.0f})",
+                    f"Stop loss:    ₹{rupee_lvls['sl']:,.2f}  (max loss ₹{rupee_lvls['max_risk']:,.0f})",
+                ]
+
+            intra_msg = "\n".join(intra_lines)
+            _notify(intra_msg)
             last_alerted[sig_key] = datetime.now(_IST)
             logger.info("Intraday signal alert sent: %s", intra_sig["action"])
 
@@ -298,13 +337,12 @@ def _dispatch_alerts(
         hits = check_and_mark(cur_price, day_high, day_low)
         for hit in hits:
             msg = format_target_alert(ticker, hit, cur_price)
-            _wa(msg)
-            _tg(msg)
+            _notify(msg)
             logger.info("Target hit alert sent: %s", hit.get("label"))
 
     # ── Time-based exit alert ─────────────────────────────────────────────────
     time_act = data.get("time_action")
-    if time_act:
+    if time_act and notify_ready:
         ta_key   = f"time_{time_act['action']}_{now_t.date()}"
         last_t   = last_alerted.get(ta_key)
         too_soon = last_t and (datetime.now(_IST) - last_t).total_seconds() < 3600
@@ -315,20 +353,18 @@ def _dispatch_alerts(
             )
             if time_act["action"] == "tighten_stop":
                 ta_msg += f"\nNew stop: ₹{time_act.get('new_sl', 0):,.2f}"
-            _wa(ta_msg)
-            _tg(ta_msg)
+            _notify(ta_msg)
             last_alerted[ta_key] = datetime.now(_IST)
             logger.info("Time-based exit alert sent: %s", time_act["action"])
 
     # ── Sentiment shift alert (60-min cooldown to prevent repeat sends) ───────
     shift_alert = (data.get("news_snapshot") or {}).get("shift_alert")
-    if shift_alert:
+    if shift_alert and notify_ready:
         shift_key = f"sentiment_shift_{now_t.date()}"
         last_t    = last_alerted.get(shift_key)
         too_soon  = last_t and (datetime.now(_IST) - last_t).total_seconds() < 3600
         if not too_soon:
-            _wa(shift_alert)
-            _tg(shift_alert)
+            _notify(shift_alert)
             last_alerted[shift_key] = datetime.now(_IST)
             logger.info("Sentiment shift alert sent")
 
@@ -362,53 +398,126 @@ def _dispatch_alerts(
             last_alerted[signal] = datetime.now(_IST)
             logger.info("Score-based alert sent: %s", signal)
 
-    # ── Supertrend strategy events (open / partial / close) ──────────────────
+    # ── Supertrend strategy events ────────────────────────────────────────────
+    # Orders are now placed AND confirmed inside _refresh() before the state is
+    # mutated, so these events already reflect real, filled trades. This loop
+    # only notifies; it never places orders.
     for event_type, payload in data.get("strategy_events", []):
         if event_type == "open":
             msg = format_position_open_alert(
                 ticker, payload["sizing"], payload["buy_signal"], capital, risk_pct
             )
             if broker:
-                qty = payload["sizing"]["qty"]
-                order_id = broker.place_market_order(ticker, qty, "BUY")
-                if order_id:
-                    msg += f"\n📋 Order placed  id={order_id}"
-                    logger.warning("AUTO-TRADE BUY  qty=%d  order_id=%s", qty, order_id)
-                else:
-                    msg += "\n⚠️ ORDER FAILED — please execute manually!"
-                    logger.error("AUTO-TRADE BUY FAILED  qty=%d", qty)
+                msg += "\n✅ Order filled and confirmed."
 
         elif event_type == "partial":
+            reason = payload.get("reason", "t1_hit")
             msg = format_partial_alert(
-                ticker, payload["position"], payload["price"], payload["pnl"]
+                ticker, payload["position"], payload["price"], payload["pnl"], reason
             )
             if broker:
-                qty = payload["position"]["qty"] - payload["position"]["qty_remaining"]
-                order_id = broker.place_market_order(ticker, qty, "SELL")
-                if order_id:
-                    msg += f"\n📋 Order placed  id={order_id}"
-                    logger.warning("AUTO-TRADE SELL (partial)  qty=%d  order_id=%s", qty, order_id)
-                else:
-                    msg += "\n⚠️ SELL ORDER FAILED — please execute manually!"
-                    logger.error("AUTO-TRADE SELL (partial) FAILED  qty=%d", qty)
+                msg += "\n✅ Sell order filled and confirmed."
 
         elif event_type == "close":
             msg = format_position_close_alert(ticker, payload["trade"], payload["reason"])
             if broker:
-                qty = payload["trade"]["qty_closed_at_exit"]
-                order_id = broker.place_market_order(ticker, qty, "SELL")
-                if order_id:
-                    msg += f"\n📋 Order placed  id={order_id}"
-                    logger.warning("AUTO-TRADE SELL (close)  qty=%d  order_id=%s", qty, order_id)
-                else:
-                    msg += "\n⚠️ SELL ORDER FAILED — please execute manually!"
-                    logger.error("AUTO-TRADE SELL (close) FAILED  qty=%d", qty)
+                msg += "\n✅ Sell order filled and confirmed."
+
+        elif event_type == "open_failed":
+            msg = (
+                f"⚠️ *Auto-trade BUY not placed — {ticker}*\n\n"
+                f"Tried to buy {payload['qty']} shares but the order did not fill "
+                f"(rejected, cancelled, or timed out). No position was opened. "
+                f"Check Zerodha and your funds."
+            )
+            logger.error("AUTO-TRADE BUY did not fill — qty=%d", payload["qty"])
+
+        elif event_type == "exit_failed":
+            msg = (
+                f"🚨 *Auto-trade SELL FAILED — {ticker}*\n\n"
+                f"Tried to sell {payload['qty']} shares ({payload['reason']}) but the "
+                f"order did not fill. Your position is STILL OPEN — please exit "
+                f"manually in Zerodha now."
+            )
+            logger.error(
+                "AUTO-TRADE SELL did not fill — qty=%d reason=%s",
+                payload["qty"], payload["reason"],
+            )
+
+        elif event_type == "insufficient_funds":
+            msg = (
+                f"💸 *Auto-trade BUY skipped — {ticker}*\n\n"
+                f"Signal fired but you have ₹{payload['have']:,.0f} available and the "
+                f"trade needs ₹{payload['need']:,.0f} ({payload['qty']} shares). "
+                f"Add funds or lower CAPITAL."
+            )
+            logger.warning(
+                "AUTO-TRADE BUY skipped — need ₹%.0f have ₹%.0f",
+                payload["need"], payload["have"],
+            )
+
+        elif event_type == "reconcile_warn":
+            msg = (
+                f"⚠️ *Auto-trade BUY skipped — {ticker}*\n\n"
+                f"A buy signal fired but Zerodha already shows {payload['held']} shares "
+                f"held that the bot wasn't tracking. No new order placed. Check your "
+                f"positions — fix the mismatch before the next signal."
+            )
+            logger.error("AUTO-TRADE BUY skipped — broker holds %d untracked", payload["held"])
+
+        elif event_type == "event_blocked":
+            msg = (
+                f"📅 *Auto-trade BUY skipped — {ticker}*\n\n"
+                f"A buy signal fired but earnings are within a couple of days. "
+                f"Skipping new entries to avoid overnight gap risk around results."
+            )
+            logger.warning("AUTO-TRADE BUY skipped — near earnings event")
         else:
             continue
 
-        _wa(msg)
-        _tg(msg)
+        _notify(msg)
         logger.info("Strategy event alert sent: %s", event_type)
+
+
+def _broadcast(msg: str) -> None:
+    """Send a system/auth message to every configured channel (WhatsApp +
+    Telegram). Reads creds from env so it works anywhere without plumbing."""
+    wa_sid   = os.getenv("TWILIO_ACCOUNT_SID", "")
+    wa_token = os.getenv("TWILIO_AUTH_TOKEN", "")
+    wa_from  = os.getenv("TWILIO_WHATSAPP_FROM", "")
+    wa_to    = os.getenv("TWILIO_WHATSAPP_TO", "")
+    tg_token   = os.getenv("TELEGRAM_TOKEN", "")
+    tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    if wa_sid and wa_token and wa_from and wa_to:
+        send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to, msg)
+    if tg_token and tg_chat_id:
+        send_alert(tg_token, tg_chat_id, msg)
+
+
+def _reconcile_on_startup(
+    broker, ticker, wa_sid, wa_token, wa_from, wa_to, wa_ready
+) -> None:
+    """Compare bot trade state against the broker's actual holdings on startup."""
+    state    = load_state()
+    pos      = state.get("position") or {}
+    bot_qty  = int(pos.get("qty_remaining", 0)) if pos else 0
+    held     = broker.held_qty(ticker)
+
+    if held is None:
+        logger.warning("Reconcile: could not query broker holdings — skipping check")
+        return
+
+    if bot_qty == held:
+        logger.info("Reconcile OK: bot=%d  broker=%d shares", bot_qty, held)
+        return
+
+    logger.error("RECONCILE MISMATCH: bot=%d  broker=%d shares", bot_qty, held)
+    _broadcast(
+        f"⚠️ *Position mismatch — {ticker}*\n\n"
+        f"Bot thinks it holds {bot_qty} shares, but Zerodha shows {held}.\n"
+        f"The bot will keep using its own record. If that's wrong, fix it "
+        f"before the next signal (e.g. send SELL or clear state)."
+    )
 
 
 def main() -> None:
@@ -422,6 +531,7 @@ def main() -> None:
     logger.info("Starting EmcurePriceTracker headless service for %s", ticker)
     logger.info("Refresh interval: %ss", refresh_seconds)
 
+    _warn_if_env_world_readable()
     load_sentiment_model()
     last_alerted: dict = {}
 
@@ -455,34 +565,36 @@ def main() -> None:
                     logger.info("Kite not authenticated — attempting auto_login")
                     if broker.auto_login(_kite_user, _kite_pass, _kite_totp):
                         logger.warning("Kite auto_login succeeded — auto-trading ACTIVE")
-                        if wa_ready:
-                            send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to,
-                                f"✅ {ticker} auto-trading ACTIVE\n"
-                                f"Capital: ₹{capital:,.0f}  Risk: {risk_pct}%/trade")
+                        _broadcast(
+                            f"✅ {ticker} auto-trading ACTIVE\n"
+                            f"Capital: ₹{capital:,.0f}  Risk: {risk_pct}%/trade")
                     else:
-                        logger.error("Kite auto_login failed — sending login URL via WhatsApp")
-                        if wa_ready:
-                            send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to,
-                                f"🔐 Kite auth needed\n\n"
-                                f"1. Open: {broker.login_url()}\n"
-                                f"2. Log in with your Zerodha credentials\n"
-                                f"3. Copy request_token from redirect URL\n"
-                                f"4. Reply: TOKEN <request_token>")
+                        logger.error("Kite auto_login failed — sending login URL")
+                        _broadcast(
+                            f"🔐 Kite auth needed\n\n"
+                            f"1. Open: {broker.login_url()}\n"
+                            f"2. Log in with your Zerodha credentials\n"
+                            f"3. Copy request_token from redirect URL\n"
+                            f"4. Reply: TOKEN <request_token>")
                         broker = None
                 else:
-                    logger.warning("Kite credentials not in .env — sending login URL via WhatsApp")
-                    if wa_ready:
-                        send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to,
-                            f"🔐 Kite auth needed for auto-trading\n\n"
-                            f"Open this link and log in:\n{broker.login_url()}\n\n"
-                            f"Then reply: TOKEN <request_token>")
+                    logger.warning("Kite credentials not in .env — sending login URL")
+                    _broadcast(
+                        f"🔐 Kite auth needed for auto-trading\n\n"
+                        f"Open this link and log in:\n{broker.login_url()}\n\n"
+                        f"Then reply: TOKEN <request_token>")
                     broker = None
             else:
                 logger.warning("Kite already authenticated — auto-trading ACTIVE")
-                if wa_ready:
-                    send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to,
-                        f"✅ {ticker} auto-trading ACTIVE\n"
-                        f"Capital: ₹{capital:,.0f}  Risk: {risk_pct}%/trade")
+                _broadcast(
+                    f"✅ {ticker} auto-trading ACTIVE\n"
+                    f"Capital: ₹{capital:,.0f}  Risk: {risk_pct}%/trade")
+
+    # ── Startup reconciliation ─────────────────────────────────────────────────
+    # Detect divergence between what the bot believes it holds (strategy_state)
+    # and what Zerodha actually shows, before the loop starts trading on it.
+    if broker:
+        _reconcile_on_startup(broker, ticker, wa_sid, wa_token, wa_from, wa_to, wa_ready)
 
     while True:
         now = _now_ist()
@@ -490,15 +602,31 @@ def main() -> None:
         # Pre-open briefing window is before market open — run outside market hours
         pre_open_window = now.hour == 9 and now.minute < 15
         if pre_open_window and not is_market_holiday(now.date()):
-            # Re-authenticate Kite at start of each trading day
-            if broker and not broker.is_authenticated():
+            # Re-authenticate Kite at start of each trading day, with a once-per-day
+            # heartbeat so a silent auth failure can't leave trading dead unnoticed.
+            auth_key = f"auth_{now.date()}"
+            if broker and auth_key not in last_alerted:
                 _kite_user = os.getenv("KITE_USER_ID", "")
                 _kite_pass = os.getenv("KITE_PASSWORD", "")
                 _kite_totp = os.getenv("KITE_TOTP_SECRET", "")
-                if _kite_user and _kite_pass and _kite_totp:
-                    if not broker.auto_login(_kite_user, _kite_pass, _kite_totp):
-                        logger.error("Kite daily re-auth failed — auto-trading suspended")
-                        broker = None
+                authed = broker.is_authenticated()
+                if not authed and _kite_user and _kite_pass and _kite_totp:
+                    authed = broker.auto_login(_kite_user, _kite_pass, _kite_totp)
+
+                if authed:
+                    logger.warning("Kite auth OK for %s — auto-trading ACTIVE", now.date())
+                    _broadcast(
+                        f"✅ {ticker} auto-trading ACTIVE today\n"
+                        f"Capital: ₹{capital:,.0f}  Risk: {risk_pct}%/trade")
+                else:
+                    logger.error("Kite daily re-auth FAILED — auto-trading suspended")
+                    _broadcast(
+                        f"🚨 {ticker} auto-trading is DOWN today\n\n"
+                        f"Kite login failed — no orders will be placed. "
+                        f"Reply TOKEN <request_token> after logging in:\n"
+                        f"{broker.login_url()}")
+                    broker = None
+                last_alerted[auth_key] = now
 
             pre_key = f"pre_open_{now.date()}"
             if pre_key not in last_alerted:
@@ -518,7 +646,7 @@ def main() -> None:
             continue
 
         started_at = _now_ist()
-        data = _refresh(ticker)
+        data = _refresh(ticker, broker=broker)
 
         if not data:
             logger.warning("No market data returned, retrying in %ss...", refresh_seconds)

@@ -52,16 +52,47 @@ def _rsi_label(rsi: float) -> str:
     return f"{rsi:.0f}"
 
 
+def _momentum_label(rsi: float) -> str:
+    if rsi >= 70:
+        return f"Overbought ({rsi:.0f}) — may pull back soon ⚠️"
+    if rsi >= 55:
+        return f"Strong upward momentum ({rsi:.0f}) 📈"
+    if rsi >= 45:
+        return f"Neutral ({rsi:.0f}) — no clear direction"
+    if rsi >= 30:
+        return f"Weak, but recovery possible ({rsi:.0f}) 📉"
+    return f"Oversold ({rsi:.0f}) — possible bounce zone 🔥"
+
+
+def _macd_label(macd_hist: float) -> str:
+    if macd_hist > 0:
+        return "Short-term trend turning UP ✅"
+    return "Short-term trend turning DOWN ❌"
+
+
 def _asset_block_short(name: str, sym: str, quote: dict, sig: dict) -> list[str]:
-    """Compact block used in morning briefing."""
-    usd_inr = quote["usd_inr"]
+    """Compact layman block used in morning briefing."""
+    usd_inr  = quote["usd_inr"]
+    pct      = quote["change_pct"]
+    arrow    = "▲" if pct >= 0 else "▼"
+    sign     = "+" if pct >= 0 else ""
+    signal   = sig["signal"]
+    se       = _SIGNAL_EMOJI.get(signal, "⚪")
+    te       = _TREND_EMOJI.get(sig["trend"], "📊")
+
+    action = (
+        "Good time to consider buying 👍"   if signal in ("Strong Buy", "Buy") else
+        "Good time to consider selling 👎"  if signal in ("Strong Sell", "Sell") else
+        "No clear signal — hold or wait"
+    )
+
     return [
         f"*{name} ({sym})*",
-        _price_line(quote),
-        f"{_SIGNAL_EMOJI.get(sig['signal'], '⚪')} {sig['signal']}  ·  "
-        f"{_TREND_EMOJI.get(sig['trend'], '📊')} {sig['trend']}",
-        f"RSI {_rsi_label(sig['rsi'])}  ·  7d {sig['change_7d_pct']:+.1f}%",
-        f"BB  ₹{sig['bb_lower'] * usd_inr:,.0f} – ₹{sig['bb_upper'] * usd_inr:,.0f}",
+        f"Price: ₹{quote['price_inr']:,.0f}  (${quote['price_usd']:,.0f})  {arrow} {sign}{pct:.1f}% today",
+        f"Last 7 days: {sig['change_7d_pct']:+.1f}%",
+        f"Trend: {te} {sig['trend']}",
+        f"Momentum: {_momentum_label(sig['rsi'])}",
+        f"{se} *{signal}* — {action}",
     ]
 
 
@@ -76,37 +107,33 @@ def format_morning_briefing(
     if now is None:
         now = datetime.now()
 
-    usd_inr = btc_quote.get("usd_inr", 84.0)
+    usd_inr   = btc_quote.get("usd_inr", 84.0)
     avg_score = (btc_sig["score"] + eth_sig["score"]) / 2
 
     if avg_score >= 0.65:
-        outlook = "🟢 *Bullish* — both assets in buy territory"
+        outlook = "🟢 *Both look bullish* — decent time to consider buying"
     elif avg_score >= 0.55:
-        outlook = "🟡 *Mildly Bullish* — watch for confirmation"
+        outlook = "🟡 *Mildly positive* — wait for stronger confirmation"
     elif avg_score <= 0.35:
-        outlook = "🔴 *Bearish* — caution warranted"
+        outlook = "🔴 *Both look weak* — better to stay on the sidelines"
     else:
-        outlook = "⚪ *Neutral* — no strong directional edge"
+        outlook = "⚪ *Mixed signals* — no strong move expected either way"
 
     lines = [
-        "📊 *Crypto Morning Briefing*",
-        f"📅 {now.strftime('%a %d %b %Y  %H:%M IST')}",
-        f"💱 USD/INR ₹{usd_inr:.2f}",
+        "🌅 *Good Morning — Crypto Update*",
+        f"📅 {now.strftime('%a, %d %b %Y')}",
+        f"💱 1 USD = ₹{usd_inr:.2f} today",
         "",
-        "──────────────────────────",
     ]
     lines += _asset_block_short("Bitcoin", "BTC", btc_quote, btc_sig)
-    lines += ["", "──────────────────────────"]
+    lines += [""]
     lines += _asset_block_short("Ethereum", "ETH", eth_quote, eth_sig)
     lines += [
         "",
-        "──────────────────────────",
-        "*Overall Outlook*",
+        f"── *Overall Outlook* ──",
         outlook,
         "",
-        f"BTC score {btc_sig['score']:.2f}  ·  ETH score {eth_sig['score']:.2f}",
-        "",
-        "⏰ Next update: 8:00 PM IST",
+        "⏰ Next update: 8:00 PM tonight",
     ]
 
     return "\n".join(lines)
@@ -126,9 +153,9 @@ def format_evening_summary(
     usd_inr = btc_quote.get("usd_inr", 84.0)
 
     lines = [
-        "🌙 *Crypto Evening Summary*",
-        f"📅 {now.strftime('%a %d %b %Y  %H:%M IST')}",
-        f"💱 USD/INR ₹{usd_inr:.2f}",
+        "🌙 *Good Evening — Crypto Summary*",
+        f"📅 {now.strftime('%a, %d %b %Y')}",
+        f"💱 1 USD = ₹{usd_inr:.2f}",
         "",
     ]
 
@@ -137,36 +164,38 @@ def format_evening_summary(
         ("Ethereum", "ETH", eth_quote, eth_sig),
     ]:
         signal_emoji = _SIGNAL_EMOJI.get(sig["signal"], "⚪")
-        trend_emoji = _TREND_EMOJI.get(sig["trend"], "📊")
-        pct = quote["change_pct"]
+        trend_emoji  = _TREND_EMOJI.get(sig["trend"], "📊")
+        pct   = quote["change_pct"]
         arrow = "▲" if pct >= 0 else "▼"
-        sign = "+" if pct >= 0 else ""
+        sign  = "+" if pct >= 0 else ""
+
+        support  = sig["bb_lower"] * usd_inr
+        resist   = sig["bb_upper"] * usd_inr
+        ema50    = sig["ema50"]    * usd_inr
+        ema200   = sig["ema200"]   * usd_inr
+        above_50  = quote["price_inr"] > ema50
+        above_200 = quote["price_inr"] > ema200
 
         lines += [
-            f"──────────────────────────",
-            f"*{name} ({sym})*",
-            "```",
-            f"Price   ₹{quote['price_inr']:>12,.0f}  (${quote['price_usd']:,.0f})",
-            f"24h     {arrow} {sign}{pct:.1f}%",
-            f"7d      {sig['change_7d_pct']:+.1f}%",
-            f"RSI     {sig['rsi']:.0f}",
-            f"MACD h  {sig['macd_hist']:+.4f}",
-            f"EMA20   ₹{sig['ema20'] * usd_inr:,.0f}",
-            f"EMA50   ₹{sig['ema50'] * usd_inr:,.0f}",
-            f"EMA200  ₹{sig['ema200'] * usd_inr:,.0f}",
-            f"BB Lo   ₹{sig['bb_lower'] * usd_inr:,.0f}",
-            f"BB Hi   ₹{sig['bb_upper'] * usd_inr:,.0f}",
-            f"ATR     ₹{sig['atr'] * usd_inr:,.0f}  ({sig['atr_pct']:.1f}%)",
-            "```",
-            f"{signal_emoji} {sig['signal']}  ·  {trend_emoji} {sig['trend']}",
+            f"── *{name} ({sym})* ──",
+            f"Price:    ₹{quote['price_inr']:,.0f}  (${quote['price_usd']:,.0f})",
+            f"Today:    {arrow} {sign}{pct:.1f}%   |   Last 7 days: {sig['change_7d_pct']:+.1f}%",
+            "",
+            f"📊 *Market Conditions:*",
+            f"Momentum: {_momentum_label(sig['rsi'])}",
+            f"Trend:    {_macd_label(sig['macd_hist'])}",
+            f"Direction: {trend_emoji} {sig['trend']}",
+            f"vs 50-day avg:  {'Above ✅' if above_50  else 'Below ❌'}  (₹{ema50:,.0f})",
+            f"vs 200-day avg: {'Above ✅' if above_200 else 'Below ❌'}  (₹{ema200:,.0f})",
+            "",
+            f"Support zone: ₹{support:,.0f}  (price tends to bounce here)",
+            f"Resist zone:  ₹{resist:,.0f}  (price tends to struggle here)",
+            "",
+            f"{signal_emoji} *Signal: {sig['signal']}*",
             "",
         ]
 
-    lines += [
-        "──────────────────────────",
-        "⏰ Next update: tomorrow 8:00 AM IST",
-    ]
-
+    lines += ["⏰ Next update: tomorrow 8:00 AM"]
     return "\n".join(lines)
 
 
@@ -181,35 +210,46 @@ def format_signal_alert(
     if now is None:
         now = datetime.now()
 
-    usd_inr = quote.get("usd_inr", 84.0)
-    rsi = sig["rsi"]
-    signal = sig["signal"]
+    usd_inr      = quote.get("usd_inr", 84.0)
+    rsi          = sig["rsi"]
+    signal       = sig["signal"]
     signal_emoji = _SIGNAL_EMOJI.get(signal, "⚪")
+    pct          = quote["change_pct"]
+    arrow        = "▲" if pct >= 0 else "▼"
+    sign         = "+" if pct >= 0 else ""
 
-    rsi_note = ""
     if rsi < 35:
-        rsi_note = "🔥 RSI oversold — historically a strong accumulation zone"
+        rsi_note = "🔥 Price is unusually low compared to recent history — historically a good accumulation zone."
     elif rsi > 68:
-        rsi_note = "⚠️ RSI overbought — elevated risk, consider waiting for pullback"
+        rsi_note = "⚠️ Price has run up fast and may be due for a pullback. Don't chase."
+    else:
+        rsi_note = ""
+
+    action = (
+        "This could be a good buying opportunity."  if signal in ("Strong Buy", "Buy") else
+        "Consider reducing or exiting your position." if signal in ("Strong Sell", "Sell") else
+        "No strong action needed right now."
+    )
 
     lines = [
-        f"{signal_emoji} *{name} ({sym}) — {signal}*",
-        f"📅 {now.strftime('%d %b %Y  %H:%M IST')}",
+        f"{signal_emoji} *{name} Alert — {signal}*",
+        f"⏰ {now.strftime('%d %b %Y, %H:%M IST')}",
         "",
-        _price_line(quote),
-        f"7d change  {sig['change_7d_pct']:+.1f}%",
+        f"Price: ₹{quote['price_inr']:,.0f}  (${quote['price_usd']:,.0f})",
+        f"Today: {arrow} {sign}{pct:.1f}%   |   Last 7 days: {sig['change_7d_pct']:+.1f}%",
         "",
-        f"RSI     {_rsi_label(rsi)}",
-        f"MACD h  {sig['macd_hist']:+.4f}",
-        f"Trend   {_TREND_EMOJI.get(sig['trend'], '📊')} {sig['trend']}",
-        f"Score   {sig['score']:.2f}",
+        f"📊 *What the indicators say:*",
+        f"Momentum: {_momentum_label(rsi)}",
+        f"Trend:    {_macd_label(sig['macd_hist'])}",
+        f"Direction: {_TREND_EMOJI.get(sig['trend'], '📊')} {sig['trend']}",
         "",
-        f"BB Lo   ₹{sig['bb_lower'] * usd_inr:,.0f}",
-        f"BB Hi   ₹{sig['bb_upper'] * usd_inr:,.0f}",
-        f"EMA50   ₹{sig['ema50'] * usd_inr:,.0f}",
+        f"Support zone: ₹{sig['bb_lower'] * usd_inr:,.0f}",
+        f"Resist zone:  ₹{sig['bb_upper'] * usd_inr:,.0f}",
     ]
 
     if rsi_note:
         lines += ["", rsi_note]
+
+    lines += ["", f"👉 {action}"]
 
     return "\n".join(lines)

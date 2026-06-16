@@ -1,0 +1,22 @@
+%% Dual-channel alert dispatch
+%% Render: https://mermaid.live
+flowchart LR
+    subgraph Producers["Alert producers"]
+        SCHED["Scheduled briefings<br/>pre-open · post-open · EOD"]
+        SIG["Entry signals ·<br/>T1/T2/T3/SL hits ·<br/>strategy events"]
+        SYS["System: auth heartbeat ·<br/>reconcile · login URL"]
+        CRY["Crypto 8AM / 8PM ·<br/>intraday RSI signals"]
+    end
+
+    N["_notify() (dispatch)<br/>_broadcast() (system)<br/>crypto _wa()"]
+
+    SCHED --> N
+    SIG --> N
+    SYS --> N
+    CRY --> N
+
+    N ==>|"always delivers"| TG["Telegram<br/>(no daily limit)"]
+    N -.->|"until 50/day cap,<br/>then 429 (logged, skipped)"| WA["WhatsApp / Twilio"]
+
+    TG --> Phone(["Your phone"])
+    WA -. best-effort .-> Phone

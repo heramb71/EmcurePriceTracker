@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import time as _time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
@@ -12,6 +13,11 @@ from zoneinfo import ZoneInfo
 logger = logging.getLogger(__name__)
 
 _IST = ZoneInfo("Asia/Kolkata")
+
+# Limit-order price offset from LTP: BUY slightly above, SELL slightly below,
+# so the order fills promptly without a true market order (which Kite rejects
+# without market protection).
+DEFAULT_SLIPPAGE_PCT = 0.1
 
 # Shared token file — written by bot_server (TOKEN cmd) or auto_login, read by headless
 _TOKEN_FILE = Path("/opt/emcure/kite_token.json")
@@ -191,25 +197,71 @@ class KiteBroker:
             return 0.0
 
     def get_position(self, ticker: str) -> Optional[dict]:
-        """Return the current intraday (MIS) net position, or None."""
+        """Return the current delivery (CNC) net position, or None."""
         symbol = _nse_symbol(ticker)
         try:
             positions = self.kite.positions()
             for pos in positions.get("net", []):
-                if pos["tradingsymbol"] == symbol and pos["product"] == "MIS":
+                if pos["tradingsymbol"] == symbol and pos["product"] == "CNC":
                     return pos
             return None
         except Exception:
             logger.exception("get_position failed for %s", symbol)
             return None
 
+    def held_qty(self, ticker: str) -> Optional[int]:
+        """
+        Net CNC quantity held at the broker (positions + holdings).
+        Returns None only when the broker could not be queried — callers must
+        distinguish "broker says zero" (0) from "could not check" (None).
+        """
+        symbol = _nse_symbol(ticker)
+        try:
+            qty = 0
+            positions = self.kite.positions()
+            for pos in positions.get("net", []):
+                if pos["tradingsymbol"] == symbol and pos["product"] == "CNC":
+                    qty += int(pos.get("quantity") or 0)
+            # CNC fills settle into holdings overnight (T+1), so check there too.
+            for h in self.kite.holdings():
+                if h.get("tradingsymbol") == symbol:
+                    qty += int(h.get("quantity") or 0)
+            return qty
+        except Exception:
+            logger.exception("held_qty failed for %s", symbol)
+            return None
+
+    def available_funds(self) -> Optional[float]:
+        """
+        Live available equity cash for placing CNC orders.
+        Returns None when the broker could not be queried so callers can
+        distinguish "no funds" (0.0) from "could not check" (None).
+        """
+        try:
+            margins = self.kite.margins()
+            equity  = margins.get("equity", {})
+            available = equity.get("available", {})
+            return float(available.get("live_balance", 0.0))
+        except Exception:
+            logger.exception("available_funds failed")
+            return None
+
     # ── Order placement ──────────────────────────────────────────────────────
 
-    def place_market_order(self, ticker: str, qty: int, side: str) -> Optional[str]:
+    # Default fill-confirmation window. The main loop refreshes every ~300s,
+    # so blocking up to FILL_TIMEOUT_S to confirm a fill is acceptable.
+    FILL_TIMEOUT_S = 45
+    FILL_POLL_S    = 3
+
+    def _place_limit_order(
+        self, ticker: str, qty: int, side: str, slippage_pct: float = DEFAULT_SLIPPAGE_PCT
+    ) -> Optional[str]:
         """
-        Place an NSE intraday (MIS) market order.
-        side: 'BUY' or 'SELL'
-        Returns order_id string, or None on failure.
+        Place an NSE delivery (CNC) limit order with a small slippage buffer.
+        Zerodha API does not allow market orders without market protection,
+        so we use a limit order priced slightly above LTP (BUY) or below (SELL).
+        Returns order_id string, or None on failure. Does NOT confirm the fill —
+        use place_order_and_confirm() for anything that mutates trade state.
         """
         from kiteconnect import KiteConnect
 
@@ -220,24 +272,115 @@ class KiteBroker:
             else KiteConnect.TRANSACTION_TYPE_SELL
         )
         try:
+            ltp = self.get_ltp(ticker)
+            if ltp <= 0:
+                logger.error("_place_limit_order: could not fetch LTP for %s", symbol)
+                return None
+
+            # BUY: bid slightly above LTP to ensure fill; SELL: slightly below
+            if side == "BUY":
+                limit_price = round(ltp * (1 + slippage_pct / 100), 1)
+            else:
+                limit_price = round(ltp * (1 - slippage_pct / 100), 1)
+
             order_id = self.kite.place_order(
                 variety=KiteConnect.VARIETY_REGULAR,
                 exchange=KiteConnect.EXCHANGE_NSE,
                 tradingsymbol=symbol,
                 transaction_type=tx,
                 quantity=qty,
-                product=KiteConnect.PRODUCT_MIS,
-                order_type=KiteConnect.ORDER_TYPE_MARKET,
+                product=KiteConnect.PRODUCT_CNC,
+                order_type=KiteConnect.ORDER_TYPE_LIMIT,
+                price=limit_price,
             )
             logger.warning(
-                "ORDER PLACED  %s  %s  %d sh  order_id=%s", side, symbol, qty, order_id
+                "ORDER PLACED  %s  %s  %d sh  limit=₹%.1f  order_id=%s",
+                side, symbol, qty, limit_price, order_id,
             )
             return str(order_id)
         except Exception:
             logger.exception(
-                "place_market_order FAILED  %s  %s  qty=%d", side, symbol, qty
+                "_place_limit_order FAILED  %s  %s  qty=%d", side, symbol, qty
             )
             return None
+
+    def _await_fill(self, order_id: str, qty: int) -> dict:
+        """
+        Poll order_history until the order is COMPLETE, REJECTED, or CANCELLED.
+        On timeout, cancel the still-open order so it cannot fill unattended.
+        Returns: {"order_id", "status", "fill_price", "filled_qty"}.
+        status is one of COMPLETE / REJECTED / CANCELLED / TIMEOUT / ERROR.
+        """
+        from kiteconnect import KiteConnect
+
+        deadline    = _time.time() + self.FILL_TIMEOUT_S
+        last_status = None
+        while _time.time() < deadline:
+            try:
+                history = self.kite.order_history(order_id)
+            except Exception:
+                logger.exception("order_history failed for %s", order_id)
+                _time.sleep(self.FILL_POLL_S)
+                continue
+
+            if history:
+                last        = history[-1]
+                last_status = last.get("status")
+                if last_status == "COMPLETE":
+                    fill_price = float(last.get("average_price") or 0.0)
+                    filled     = int(last.get("filled_quantity") or qty)
+                    logger.warning(
+                        "ORDER FILLED  id=%s  qty=%d  avg=₹%.2f",
+                        order_id, filled, fill_price,
+                    )
+                    return {
+                        "order_id": order_id,
+                        "status": "COMPLETE",
+                        "fill_price": fill_price,
+                        "filled_qty": filled,
+                    }
+                if last_status in ("REJECTED", "CANCELLED"):
+                    logger.error(
+                        "ORDER %s  id=%s  msg=%s",
+                        last_status, order_id, last.get("status_message"),
+                    )
+                    return {
+                        "order_id": order_id,
+                        "status": last_status,
+                        "fill_price": 0.0,
+                        "filled_qty": 0,
+                    }
+            _time.sleep(self.FILL_POLL_S)
+
+        # Timed out still OPEN — cancel so it cannot fill while unmanaged.
+        logger.error(
+            "ORDER NOT FILLED in %ss  id=%s  last_status=%s — cancelling",
+            self.FILL_TIMEOUT_S, order_id, last_status,
+        )
+        try:
+            self.kite.cancel_order(variety=KiteConnect.VARIETY_REGULAR, order_id=order_id)
+        except Exception:
+            logger.exception("cancel_order failed for %s", order_id)
+        return {"order_id": order_id, "status": "TIMEOUT", "fill_price": 0.0, "filled_qty": 0}
+
+    def place_order_and_confirm(
+        self, ticker: str, qty: int, side: str, slippage_pct: float = DEFAULT_SLIPPAGE_PCT
+    ) -> Optional[dict]:
+        """
+        Place an order AND wait for confirmation of the fill before returning.
+
+        Returns the fill result dict on a COMPLETE fill, or None if the order
+        could not be placed or did not fully fill (rejected / cancelled /
+        timed out). Callers MUST only mutate trade state when this returns a
+        dict with status == "COMPLETE", using the returned fill_price.
+        """
+        order_id = self._place_limit_order(ticker, qty, side, slippage_pct)
+        if not order_id:
+            return None
+        result = self._await_fill(order_id, qty)
+        if result["status"] != "COMPLETE" or result["filled_qty"] < qty:
+            return None
+        return result
 
 
 # ── Execution readiness check ────────────────────────────────────────────────

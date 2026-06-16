@@ -28,6 +28,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from src.trade_manager import set_trade, clear_trade, get_trade, current_pnl
+from src.state import load_state
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
@@ -35,8 +36,12 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 TICKER            = os.getenv("TICKER", "EMCURE")
 CAPITAL           = float(os.getenv("CAPITAL", "100000"))
 RISK_RUPEES       = float(os.getenv("RISK_RUPEES", "4500"))
-AUTHORIZED        = os.getenv("TWILIO_WHATSAPP_TO", "").replace("whatsapp:", "")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+AUTHORIZED           = os.getenv("TWILIO_WHATSAPP_TO", "").replace("whatsapp:", "")
+TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN    = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "")
+TELEGRAM_TOKEN       = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID     = os.getenv("TELEGRAM_CHAT_ID", "")
 HEALTH_API_KEY    = os.getenv("HEALTH_API_KEY", "")
 KITE_API_KEY      = os.getenv("KITE_API_KEY", "")
 KITE_API_SECRET   = os.getenv("KITE_API_SECRET", "")
@@ -101,30 +106,53 @@ def _handle_sell(parts: list[str]) -> str:
 
 
 def _handle_status(parts: list[str]) -> str:
-    trade = get_trade()
-    if not trade:
-        return "No active trade.\n\nSend BUY <price> to record one."
-
     price = _live_price()
     if price <= 0:
         return "❌ Could not fetch live price right now."
 
-    p = current_pnl(price)
-    hit = p["levels_hit"]
+    lines = []
 
-    lines = [
-        f"📊 {TICKER}.NS — Live Position",
-        "",
-        f"Entry    ₹{p['entry']:,.2f} × {p['qty']} sh",
-        f"Current  ₹{price:,.2f}  ({p['pnl_per']:+.2f}/sh)",
-        f"P&L      ₹{p['pnl']:+,.0f}",
-        "",
-    ]
-    for label, level in [("T3", p["t3"]), ("T2", p["t2"]),
-                          ("T1", p["t1"]), ("SL", p["sl"])]:
-        tick = " ✅" if label in hit else ""
-        dist = round(level - price, 2)
-        lines.append(f"{label:<4} ₹{level:,.2f}  ({dist:+.2f}){tick}")
+    # ── Auto-trade position (Supertrend strategy) ─────────────────────────
+    auto_state = load_state()
+    auto_pos   = auto_state.get("position")
+    if auto_pos:
+        entry   = float(auto_pos["entry"])
+        qty     = int(auto_pos["qty_remaining"])
+        sl      = float(auto_pos["sl"])
+        t1      = float(auto_pos["t1"])
+        pnl     = round((price - entry) * qty, 0)
+        sign    = "+" if pnl >= 0 else ""
+        partial = " (partial booked ✅)" if auto_pos.get("partial_booked") else ""
+        lines += [
+            f"🤖 *Auto-Trade Position*{partial}",
+            f"Entry:   ₹{entry:,.2f} × {qty} shares",
+            f"Current: ₹{price:,.2f}",
+            f"P&L:     {sign}₹{pnl:,.0f}",
+            f"T1:      ₹{t1:,.2f}  ({t1 - price:+.0f})",
+            f"SL:      ₹{sl:,.2f}  ({sl - price:+.0f})",
+            "",
+        ]
+
+    # ── Manual trade position (BUY command) ───────────────────────────────
+    trade = get_trade()
+    if trade:
+        p   = current_pnl(price)
+        hit = p["levels_hit"]
+        lines += [
+            f"📱 *Manual Trade Position*",
+            f"Entry:   ₹{p['entry']:,.2f} × {p['qty']} shares",
+            f"Current: ₹{price:,.2f}  ({p['pnl_per']:+.2f}/sh)",
+            f"P&L:     ₹{p['pnl']:+,.0f}",
+            "",
+        ]
+        for label, level in [("T3", p["t3"]), ("T2", p["t2"]),
+                              ("T1", p["t1"]), ("SL", p["sl"])]:
+            tick = " ✅" if label in hit else ""
+            dist = round(level - price, 2)
+            lines.append(f"{label:<4} ₹{level:,.2f}  ({dist:+.2f}){tick}")
+
+    if not lines:
+        return "No active trades.\n\nSend BUY <price> to record a manual trade."
 
     return "\n".join(lines)
 
@@ -139,6 +167,7 @@ def _handle_help(parts: list[str]) -> str:
         f"SELL               close trade\n"
         f"STATUS             live P&L\n"
         f"KITE               check auto-trading status\n"
+        f"CRYPTO             BTC/ETH summary\n"
         f"TOKEN <token>      complete Kite daily auth\n"
         f"HELP               this message\n"
         f"\n"
@@ -156,6 +185,33 @@ def _handle_kite(parts: list[str]) -> str:
     for c in result["checks"]:
         lines.append(f"{tick[c['ok']]} {c['name']}: {c['detail']}")
     return "\n".join(lines)
+
+
+def _handle_crypto(parts: list[str]) -> str:
+    """On-demand BTC/ETH summary (same read as the 8 AM / 8 PM briefings)."""
+    try:
+        from datetime import datetime, timezone, timedelta
+        from crypto.data import fetch_crypto_daily, fetch_crypto_quote, fetch_usd_inr
+        from crypto.signals import compute_crypto_signal
+        from crypto.messages import format_evening_summary
+
+        ist = timezone(timedelta(hours=5, minutes=30))
+        usd = fetch_usd_inr()
+
+        def _asset(sym: str):
+            df = fetch_crypto_daily(sym, days=250)
+            q  = fetch_crypto_quote(sym, usd)
+            if df is None or len(df) < 30 or q is None:
+                return None, None
+            return q, compute_crypto_signal(df, q)
+
+        bq, bs = _asset("BTC-USD")
+        eq, es = _asset("ETH-USD")
+        if not (bq and bs and eq and es):
+            return "❌ Could not fetch crypto data right now. Try again shortly."
+        return format_evening_summary(bq, bs, eq, es, datetime.now(ist))
+    except Exception as e:
+        return f"❌ Crypto error: {e}"
 
 
 def _handle_token(parts: list[str]) -> str:
@@ -184,6 +240,7 @@ _HANDLERS = {
     "BUY":    _handle_buy,
     "SELL":   _handle_sell,
     "STATUS": _handle_status,
+    "CRYPTO": _handle_crypto,
     "HELP":   _handle_help,
     "TOKEN":  _handle_token,
     "KITE":   _handle_kite,
@@ -218,9 +275,20 @@ def whatsapp():
     else:
         reply = f"Unknown command: {body}\nSend HELP for commands."
 
+    # Reply via the Twilio REST API — the same path as outbound alerts, which
+    # deliver reliably. TwiML webhook responses were silently not delivered in
+    # the sandbox, so we send the reply directly and ack the webhook with 204.
+    if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_WHATSAPP_FROM:
+        from src.alerts import send_whatsapp_alert
+        if send_whatsapp_alert(
+            TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM, from_num, reply
+        ):
+            return Response("", status=204)
+
+    # Fallback: return TwiML with the correct XML content-type.
     resp = MessagingResponse()
     resp.message(reply)
-    return str(resp)
+    return Response(str(resp), mimetype="application/xml")
 
 
 @app.route("/kite_callback")
@@ -288,10 +356,28 @@ def health():
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _start_telegram_bot() -> None:
+    """Start the Telegram command poller in a daemon thread, if configured."""
+    if not TELEGRAM_TOKEN:
+        return
+    import threading
+    from src.telegram_bot import run_command_bot
+
+    t = threading.Thread(
+        target=run_command_bot,
+        args=(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, _HANDLERS),
+        daemon=True,
+    )
+    t.start()
+    print(f"   Telegram command bot: ON (chat_id={TELEGRAM_CHAT_ID or 'any'})")
+
+
 if __name__ == "__main__":
     port = int(os.getenv("BOT_PORT", "5001"))
-    print(f"\n🤖 {TICKER} WhatsApp Trade Bot")
+    print(f"\n🤖 {TICKER} Trade Bot")
     print(f"   Listening on http://localhost:{port}/whatsapp")
-    print(f"   Authorized number: {AUTHORIZED or 'all'}")
+    print(f"   WhatsApp authorized number: {AUTHORIZED or 'all'}")
+    print(f"   Telegram: {'configured' if TELEGRAM_TOKEN else 'OFF'}")
     print(f"   Commands: BUY <price>, SELL, STATUS, HELP\n")
+    _start_telegram_bot()
     app.run(host="127.0.0.1", port=port, debug=False)

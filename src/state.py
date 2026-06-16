@@ -6,9 +6,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from src.costs import compute_charges
+
 logger = logging.getLogger(__name__)
 
 STATE_FILE = Path("strategy_state.json")
+
+# Each target (T1/T2/T3) books this fraction of the remaining position.
+PARTIAL_DENOM = 3
 
 
 def _default_state() -> dict[str, Any]:
@@ -66,32 +71,47 @@ def open_position(
         "entry": sizing["entry"],
         "sl": sizing["sl"],
         "t1": sizing["t1"],
+        "t2": sizing.get("t2", round(sizing["entry"] + 20.0, 2)),
+        "t3": sizing.get("t3", round(sizing["entry"] + 25.0, 2)),
         "qty": sizing["qty"],
         "qty_remaining": sizing["qty"],
         "atr": round(float(atr), 2),
         "opened_at": datetime.now().isoformat(timespec="seconds"),
         "partial_booked": False,
+        "t2_booked": False,
+        "t3_booked": False,
         "breakeven_moved": False,
+        "partial_pnl": 0.0,
+        "charges": 0.0,
     }
     return state
 
 
-def book_partial(state: dict[str, Any], exit_price: float) -> tuple[dict[str, Any], float]:
-    """Book 50% of the position at exit_price. Move SL to breakeven."""
+def book_partial(
+    state: dict[str, Any], exit_price: float, reason: str = "t1_hit"
+) -> tuple[dict[str, Any], float]:
+    """Book 1/3 of remaining position at each target. Move SL to breakeven at T1."""
     pos = state["position"]
-    if not pos or pos["partial_booked"]:
+    if not pos:
         return state, 0.0
 
-    half = pos["qty_remaining"] // 2
-    pnl = round((exit_price - pos["entry"]) * half, 2)
+    third = max(1, pos["qty_remaining"] // PARTIAL_DENOM)
+    pnl   = round((exit_price - pos["entry"]) * third, 2)
 
-    pos["qty_remaining"] -= half
-    pos["partial_booked"] = True
-    pos["breakeven_moved"] = True
-    pos["sl"] = pos["entry"]  # move stop to breakeven
-    pos["partial_exit_price"] = round(float(exit_price), 2)
-    pos["partial_pnl"] = pnl
-    pos["partial_at"] = datetime.now().isoformat(timespec="seconds")
+    pos["qty_remaining"] -= third
+    pos["partial_pnl"]    = round(float(pos.get("partial_pnl", 0.0)) + pnl, 2)
+    pos["charges"]        = round(
+        float(pos.get("charges", 0.0)) + compute_charges(pos["entry"], exit_price, third), 2
+    )
+
+    if reason == "t1_hit":
+        pos["partial_booked"]  = True
+        pos["breakeven_moved"] = True
+        pos["sl"]              = pos["entry"]
+    elif reason == "t2_hit":
+        pos["t2_booked"] = True
+    elif reason == "t3_hit":
+        pos["t3_booked"] = True
 
     state["session"]["session_pnl"] = round(
         state["session"].get("session_pnl", 0.0) + pnl, 2
@@ -107,9 +127,12 @@ def close_position(
         return state, 0.0
 
     pnl_remaining = (exit_price - pos["entry"]) * pos["qty_remaining"]
-    total_pnl = round(
-        float(pos.get("partial_pnl", 0.0)) + pnl_remaining, 2
-    )
+    gross_pnl = round(float(pos.get("partial_pnl", 0.0)) + pnl_remaining, 2)
+
+    # Charges: per-leg partial charges already accrued + this closing leg.
+    final_leg_charges = compute_charges(pos["entry"], exit_price, pos["qty_remaining"])
+    total_charges = round(float(pos.get("charges", 0.0)) + final_leg_charges, 2)
+    net_pnl = round(gross_pnl - total_charges, 2)
 
     trade = {
         "ticker": pos["ticker"],
@@ -121,7 +144,9 @@ def close_position(
         "partial_exit_price": pos.get("partial_exit_price"),
         "partial_pnl": pos.get("partial_pnl", 0.0),
         "final_pnl": round(pnl_remaining, 2),
-        "total_pnl": total_pnl,
+        "gross_pnl": gross_pnl,
+        "charges": total_charges,
+        "total_pnl": net_pnl,   # net of charges — the honest number
         "reason": reason,
         "opened_at": pos["opened_at"],
         "closed_at": datetime.now().isoformat(timespec="seconds"),
@@ -130,15 +155,17 @@ def close_position(
     state["position"] = None
 
     session = state["session"]
+    # session_pnl accrued gross during partials; subtract full charges at close
+    # so the running total and circuit breaker reflect net P&L.
     session["session_pnl"] = round(
-        session.get("session_pnl", 0.0) + pnl_remaining, 2
+        session.get("session_pnl", 0.0) + pnl_remaining - total_charges, 2
     )
-    if total_pnl < 0:
+    if net_pnl < 0:
         session["consecutive_losses"] = session.get("consecutive_losses", 0) + 1
     else:
         session["consecutive_losses"] = 0
 
-    return state, total_pnl
+    return state, net_pnl
 
 
 def check_circuit_breaker(

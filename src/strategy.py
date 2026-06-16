@@ -5,9 +5,23 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# ── Tuning constants ─────────────────────────────────────────────────────────
+# Stop and targets scale with ATR so exits adapt to volatility instead of using
+# flat rupee amounts (too tight on busy days, too far on quiet ones).
+# EMCURE ATR ≈ ₹30–40 → stop ≈ ₹35, T1/T2/T3 ≈ ₹35/₹70/₹105.
+STOP_ATR_MULT = 1.0          # stop = entry − 1.0 × ATR
+T1_ATR_MULT   = 1.0          # T1   = entry + 1.0 × ATR
+T2_ATR_MULT   = 2.0          # T2   = entry + 2.0 × ATR
+T3_ATR_MULT   = 3.0          # T3   = entry + 3.0 × ATR
+
+# Entry-gate thresholds.
+RSI_MIN = 40.0
+RSI_MAX = 75.0
+VOLUME_RATIO_MIN = 0.8
+
 
 # ────────────────────────────────────────────────────────────────────────────
-# Layer 1 — Signal: 4-condition BUY gate
+# Layer 1 — Signal: BUY gate (trend + momentum + volume + regime)
 # ────────────────────────────────────────────────────────────────────────────
 
 
@@ -52,7 +66,9 @@ def check_buy_gate(
         "conditions": { "trend", "momentum", "volume", "candle", "regime_ok" },
         "details": {...explanatory data...}
       }
-    A pass requires the four primary conditions. Regime is informational.
+    A pass requires trend + momentum + volume + a non-bearish regime. Entries
+    are hard-blocked when the regime is Sideways or Trending Down, where the
+    Supertrend signal whipsaws.
     """
     price = float(quote.get("price", 0.0))
     ema20 = float(indicators.get("ema20", 0.0))
@@ -62,33 +78,27 @@ def check_buy_gate(
     st_value = float(supertrend_row.get("supertrend", 0.0))
     st_direction = int(supertrend_row.get("direction", -1))
 
-    above_ema = price > ema20 if ema20 > 0 else False
-    above_st = price > st_value if st_value > 0 else False
-    trend_ok = above_ema and above_st and st_direction == 1
+    trend_ok = st_direction == 1
 
-    momentum_ok = 55.0 < rsi < 75.0
+    momentum_ok = RSI_MIN < rsi < RSI_MAX
 
     vol_ratio = (volume / avg_volume) if avg_volume > 0 else 0.0
-    volume_ok = vol_ratio > 1.0
+    volume_ok = vol_ratio > VOLUME_RATIO_MIN
 
     candle_flags = evaluate_candle(last_candle)
-    candle_ok = (
-        candle_flags["is_bullish"]
-        and not candle_flags["is_doji"]
-        and (candle_flags["strong_close"] or candle_flags["strong_body"])
-    )
-
+    # Regime is now a hard gate: this is a trend-following strategy, so block
+    # entries in Sideways/Trending Down where the Supertrend signal whipsaws.
     regime_ok = regime == "Trending Up"
 
     conditions = {
         "trend": trend_ok,
         "momentum": momentum_ok,
         "volume": volume_ok,
-        "candle": candle_ok,
+        "candle": True,
         "regime_ok": regime_ok,
     }
 
-    triggered = trend_ok and momentum_ok and volume_ok and candle_ok
+    triggered = trend_ok and momentum_ok and volume_ok and regime_ok
 
     return {
         "triggered": triggered,
@@ -107,7 +117,7 @@ def check_buy_gate(
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Layer 2 — Sizing: ATR×2 stop + 1% capital risk
+# Layer 2 — Sizing: ATR-scaled stop + targets, capital-capped qty
 # ────────────────────────────────────────────────────────────────────────────
 
 
@@ -116,15 +126,14 @@ def compute_position_size(
     risk_pct: float,
     entry: float,
     atr: float,
-    atr_mult: float = 2.0,
-    rr: float = 2.0,
+    atr_mult: float = STOP_ATR_MULT,
 ) -> Optional[dict]:
     """
-    Compute position sizing per the spec:
+    Compute position sizing with volatility-scaled stop and targets:
       - Stop = entry − atr_mult × ATR
+      - T1/T2/T3 = entry + {1,2,3} × ATR  (scales with volatility)
       - Risk amount = capital × risk_pct%
-      - Qty = floor(risk amount / risk per share)
-      - T1  = entry + rr × risk per share  (default 1:2 RR)
+      - Qty = floor(risk amount / risk per share), capped by available capital
     Returns None when inputs are invalid.
     """
     if entry <= 0 or atr <= 0 or capital <= 0 or risk_pct <= 0:
@@ -137,21 +146,25 @@ def compute_position_size(
 
     risk_amount = capital * (risk_pct / 100.0)
     qty = int(risk_amount // risk_per_share)
+    qty = min(qty, int(capital // entry))  # never exceed available capital
     if qty <= 0:
         return None
 
-    t1 = entry + rr * risk_per_share
+    t1 = entry + T1_ATR_MULT * atr
+    t2 = entry + T2_ATR_MULT * atr
+    t3 = entry + T3_ATR_MULT * atr
     return {
         "entry": round(entry, 2),
         "sl": round(sl, 2),
         "t1": round(t1, 2),
+        "t2": round(t2, 2),
+        "t3": round(t3, 2),
         "qty": qty,
         "risk_per_share": round(risk_per_share, 2),
         "risk_amount": round(qty * risk_per_share, 2),
         "capital_used": round(qty * entry, 2),
         "atr": round(atr, 2),
         "atr_mult": atr_mult,
-        "rr": rr,
     }
 
 
@@ -170,29 +183,37 @@ def manage_position(
     Inspect the current price + Supertrend and return the next action.
 
     Priority order:
-      1. Stop hit       → exit_full   (reason: stop_hit)
-      2. Supertrend flip → exit_full  (reason: supertrend_exit)
-      3. T1 hit, partial not booked → exit_partial (reason: t1_hit)
-      4. None — hold
+      1. Stop hit        → exit_full    (reason: stop_hit)
+      2. Supertrend flip → exit_full    (reason: supertrend_exit)
+      3. T3 hit          → exit_partial (reason: t3_hit)
+      4. T2 hit          → exit_partial (reason: t2_hit)
+      5. T1 hit          → exit_partial (reason: t1_hit)
+      6. None — hold
     """
     if not position:
         return None
 
-    sl = float(position["sl"])
-    t1 = float(position["t1"])
-    partial_booked = bool(position.get("partial_booked"))
+    sl  = float(position["sl"])
+    t1  = float(position["t1"])
+    t2  = float(position.get("t2", position["t1"] + 10.0))
+    t3  = float(position.get("t3", position["t1"] + 15.0))
+    t1_booked = bool(position.get("partial_booked"))
+    t2_booked = bool(position.get("t2_booked"))
+    t3_booked = bool(position.get("t3_booked"))
 
     if price <= sl:
         return {"action": "exit_full", "reason": "stop_hit", "price": price}
 
     if supertrend_value > 0 and (price < supertrend_value or supertrend_direction == -1):
-        return {
-            "action": "exit_full",
-            "reason": "supertrend_exit",
-            "price": price,
-        }
+        return {"action": "exit_full", "reason": "supertrend_exit", "price": price}
 
-    if not partial_booked and price >= t1:
+    if not t3_booked and price >= t3:
+        return {"action": "exit_partial", "reason": "t3_hit", "price": price}
+
+    if not t2_booked and price >= t2:
+        return {"action": "exit_partial", "reason": "t2_hit", "price": price}
+
+    if not t1_booked and price >= t1:
         return {"action": "exit_partial", "reason": "t1_hit", "price": price}
 
     return None

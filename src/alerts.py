@@ -27,6 +27,8 @@ def _interpolate_prob(target_pct: float, probs: dict) -> int:
 
 
 def send_alert(token: str, chat_id: str, message: str) -> bool:
+    """Send a Telegram message. Falls back to plain text if Markdown fails to
+    parse (stray * / _ in dynamic content), so a message is never dropped."""
     try:
         import requests
 
@@ -35,6 +37,13 @@ def send_alert(token: str, chat_id: str, message: str) -> bool:
             url,
             json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"},
             timeout=10,
+        )
+        if resp.status_code == 200:
+            return True
+        # Markdown parse errors return 400 — retry as plain text.
+        logger.warning("Telegram Markdown send failed (%s); retrying plain", resp.status_code)
+        resp = requests.post(
+            url, json={"chat_id": chat_id, "text": message}, timeout=10
         )
         return resp.status_code == 200
     except Exception:
@@ -278,50 +287,92 @@ def format_position_open_alert(
     ticker: str, sizing: dict, buy_signal: dict, capital: float, risk_pct: float
 ) -> str:
     """WhatsApp message for a new Supertrend strategy entry."""
-    details = buy_signal.get("details", {})
-    regime = details.get("regime", "Unknown")
-    rsi = float(details.get("rsi", 0.0))
-    vol_r = float(details.get("vol_ratio", 0.0))
-    cap_used_pct = (sizing["capital_used"] / capital * 100) if capital > 0 else 0.0
+    entry = sizing["entry"]
+    sl    = sizing["sl"]
+    t1    = sizing["t1"]
+    qty   = sizing["qty"]
+    risk  = sizing["risk_amount"]
 
     return (
-        f"🚀 {ticker}.NS — Supertrend BUY\n"
-        f"Entry: ₹{sizing['entry']:,.2f} | SL: ₹{sizing['sl']:,.2f} "
-        f"| T1: ₹{sizing['t1']:,.2f}\n"
-        f"Qty: {sizing['qty']} sh  ·  Risk: ₹{sizing['risk_amount']:,.0f} "
-        f"({risk_pct:.1f}% of capital)\n"
-        f"Capital used: ₹{sizing['capital_used']:,.0f} ({cap_used_pct:.1f}%)\n"
-        f"Gate: RSI {rsi:.0f} · Vol {vol_r:.1f}x · Regime {regime}"
+        f"🚀 *Trade Entered — {ticker}*\n\n"
+        f"Bought {qty} shares at ₹{entry:,.2f}\n\n"
+        f"🎯 First target: ₹{t1:,.2f}  (+₹{t1 - entry:.0f} per share)\n"
+        f"🛑 Stop loss:    ₹{sl:,.2f}  (max loss ₹{risk:,.0f})\n\n"
+        f"I'll sell half when target is hit and hold rest for more profit.\n"
+        f"If price falls to ₹{sl:,.2f}, I'll exit to protect capital."
     )
 
 
-def format_partial_alert(ticker: str, position: dict, exit_price: float, pnl: float) -> str:
-    """WhatsApp message when T1 is hit and 50% is booked."""
-    sign = "+" if pnl >= 0 else ""
-    qty_booked = position["qty"] - position["qty_remaining"]
-    return (
-        f"💰 {ticker}.NS — T1 HIT (50% booked)\n"
-        f"Booked {qty_booked} sh @ ₹{exit_price:,.2f}  ·  P&L {sign}₹{pnl:,.0f}\n"
-        f"Trailing remaining {position['qty_remaining']} sh "
-        f"with SL moved to ₹{position['sl']:,.2f} (breakeven)"
-    )
+def format_partial_alert(
+    ticker: str, position: dict, exit_price: float, pnl: float, reason: str = "t1_hit"
+) -> str:
+    """WhatsApp message when a target is hit and 1/3 is booked."""
+    qty_booked    = position["qty"] - position["qty_remaining"]
+    qty_remaining = position["qty_remaining"]
+    sign          = "+" if pnl >= 0 else ""
+
+    label_map = {"t1_hit": "First", "t2_hit": "Second", "t3_hit": "Final"}
+    label     = label_map.get(reason, "Target")
+    emoji_map = {"t1_hit": "🎯", "t2_hit": "🎯🎯", "t3_hit": "🏆"}
+    emoji     = emoji_map.get(reason, "💰")
+
+    lines = [
+        f"{emoji} *{label} Target Hit — {ticker}*",
+        "",
+        f"Sold {qty_booked} shares at ₹{exit_price:,.2f}",
+        f"Profit booked: {sign}₹{pnl:,.0f} ✅",
+        "",
+    ]
+
+    if reason == "t1_hit":
+        lines += [
+            f"Still holding {qty_remaining} shares.",
+            f"Stop loss moved to ₹{position['sl']:,.2f} (breakeven — no loss possible now).",
+            f"Next targets: ₹{position.get('t2', exit_price + 10):,.2f} (+₹20)  ·  ₹{position.get('t3', exit_price + 15):,.2f} (+₹25)",
+        ]
+    elif reason == "t2_hit":
+        lines += [
+            f"Still holding {qty_remaining} shares.",
+            f"Final target: ₹{position.get('t3', exit_price + 5):,.2f} (+₹25)",
+        ]
+    else:
+        lines.append(f"All targets hit! Consider exiting remaining {qty_remaining} shares.")
+
+    return "\n".join(lines)
 
 
 def format_position_close_alert(
     ticker: str, trade: dict, reason: str
 ) -> str:
     """WhatsApp message when position fully closes (stop or trailing exit)."""
-    sign = "+" if trade["total_pnl"] >= 0 else ""
-    reason_label = {
-        "stop_hit": "🛑 STOP HIT",
-        "supertrend_exit": "📉 SUPERTREND EXIT",
-    }.get(reason, reason.upper())
+    pnl   = trade["total_pnl"]
+    sign  = "+" if pnl >= 0 else ""
+    won   = pnl >= 0
+    entry = trade["entry"]
+    exit_ = trade["exit"]
+    qty   = trade["qty_closed_at_exit"]
+    had_partial = trade.get("partial_booked", False)
+
+    if reason == "stop_hit":
+        header = "🛑 *Stop Loss Hit — {ticker}*".format(ticker=ticker)
+        reason_line = "Price fell to our stop loss level. Exited to protect capital."
+    elif reason == "supertrend_exit":
+        header = "📉 *Trend Reversed — {ticker}*".format(ticker=ticker)
+        reason_line = "Market trend turned down. Exited remaining position."
+    else:
+        header = f"🔔 *Position Closed — {ticker}*"
+        reason_line = ""
+
+    result_emoji = "✅" if won else "❌"
+    partial_note = "Had already booked partial profit at first target." if had_partial else ""
 
     return (
-        f"{reason_label} — {ticker}.NS\n"
-        f"Exit: ₹{trade['exit']:,.2f} (closed {trade['qty_closed_at_exit']} sh)\n"
-        f"Total P&L: {sign}₹{trade['total_pnl']:,.0f}\n"
-        f"Entry was ₹{trade['entry']:,.2f}  ·  {'partial T1 booked' if trade.get('partial_booked') else 'no partial'}"
+        f"{header}\n\n"
+        f"Sold {qty} shares at ₹{exit_:,.2f}\n"
+        f"Entry was ₹{entry:,.2f}\n\n"
+        f"{result_emoji} Total P&L: {sign}₹{pnl:,.0f}\n"
+        + (f"{partial_note}\n" if partial_note else "")
+        + (f"\n{reason_line}" if reason_line else "")
     )
 
 
