@@ -11,9 +11,11 @@ scikit-learn>=1.4
 # Optional: market regime detection (HMM)
 hmmlearn>=0.3
 
-# Sentiment (FinBERT optional; VADER always available)
-transformers>=4.40
-torch>=2.2
+# Sentiment — VADER only (lightweight, no torch).
+# FinBERT is optional and lives in requirements.txt; src/sentiment.py imports
+# transformers lazily and falls back to VADER, so torch is NOT needed on the
+# server (which runs FINBERT_MODEL_PATH=skip). Keeping torch here pulled the
+# full ~5G CUDA stack onto a GPU-less ARM VM for nothing.
 vaderSentiment>=3.3
 
 # Display
