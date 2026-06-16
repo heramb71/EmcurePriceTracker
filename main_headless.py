@@ -169,6 +169,96 @@ def _dispatch_alerts(
         if tg_ready:
             send_alert(tg_token, tg_chat_id, msg)
 
+    # ── Supertrend strategy events (sent FIRST, isolated) ────────────────────
+    # Orders are placed AND confirmed inside _refresh(), which also persists the
+    # resulting trade state to disk *before* this function ever runs. So by the
+    # time we get here, a booked trade already exists on disk whether or not its
+    # alert succeeds. This block must therefore run before — and be insulated
+    # from — every other alert type below: a KeyError or formatting bug in, say,
+    # the sentiment or score alert must never be able to swallow the exception
+    # and silently drop the notification for a real, already-filled trade.
+    for event_type, payload in data.get("strategy_events", []):
+        try:
+            if event_type == "open":
+                msg = format_position_open_alert(
+                    ticker, payload["sizing"], payload["buy_signal"], capital, risk_pct
+                )
+                if broker:
+                    msg += "\n✅ Order filled and confirmed."
+
+            elif event_type == "partial":
+                reason = payload.get("reason", "t1_hit")
+                msg = format_partial_alert(
+                    ticker, payload["position"], payload["price"], payload["pnl"], reason
+                )
+                if broker:
+                    msg += "\n✅ Sell order filled and confirmed."
+
+            elif event_type == "close":
+                msg = format_position_close_alert(ticker, payload["trade"], payload["reason"])
+                if broker:
+                    msg += "\n✅ Sell order filled and confirmed."
+
+            elif event_type == "open_failed":
+                msg = (
+                    f"⚠️ *Auto-trade BUY not placed — {ticker}*\n\n"
+                    f"Tried to buy {payload['qty']} shares but the order did not fill "
+                    f"(rejected, cancelled, or timed out). No position was opened. "
+                    f"Check Zerodha and your funds."
+                )
+                logger.error("AUTO-TRADE BUY did not fill — qty=%d", payload["qty"])
+
+            elif event_type == "exit_failed":
+                msg = (
+                    f"🚨 *Auto-trade SELL FAILED — {ticker}*\n\n"
+                    f"Tried to sell {payload['qty']} shares ({payload['reason']}) but the "
+                    f"order did not fill. Your position is STILL OPEN — please exit "
+                    f"manually in Zerodha now."
+                )
+                logger.error(
+                    "AUTO-TRADE SELL did not fill — qty=%d reason=%s",
+                    payload["qty"], payload["reason"],
+                )
+
+            elif event_type == "insufficient_funds":
+                msg = (
+                    f"💸 *Auto-trade BUY skipped — {ticker}*\n\n"
+                    f"Signal fired but you have ₹{payload['have']:,.0f} available and the "
+                    f"trade needs ₹{payload['need']:,.0f} ({payload['qty']} shares). "
+                    f"Add funds or lower CAPITAL."
+                )
+                logger.warning(
+                    "AUTO-TRADE BUY skipped — need ₹%.0f have ₹%.0f",
+                    payload["need"], payload["have"],
+                )
+
+            elif event_type == "reconcile_warn":
+                msg = (
+                    f"⚠️ *Auto-trade BUY skipped — {ticker}*\n\n"
+                    f"A buy signal fired but Zerodha already shows {payload['held']} shares "
+                    f"held that the bot wasn't tracking. No new order placed. Check your "
+                    f"positions — fix the mismatch before the next signal."
+                )
+                logger.error("AUTO-TRADE BUY skipped — broker holds %d untracked", payload["held"])
+
+            elif event_type == "event_blocked":
+                msg = (
+                    f"📅 *Auto-trade BUY skipped — {ticker}*\n\n"
+                    f"A buy signal fired but earnings are within a couple of days. "
+                    f"Skipping new entries to avoid overnight gap risk around results."
+                )
+                logger.warning("AUTO-TRADE BUY skipped — near earnings event")
+            else:
+                continue
+
+            _notify(msg)
+            logger.info("Strategy event alert sent: %s", event_type)
+        except Exception:
+            logger.exception(
+                "Failed to send strategy event alert (type=%s) — trade state on "
+                "disk may be ahead of what was notified", event_type,
+            )
+
     # ── Holiday alert (9:00–9:14 AM, once per day) ───────────────────────────
     if notify_ready and now_t.hour == 9 and now_t.minute < 15:
         holiday_key = f"holiday_{now_t.date()}"
@@ -397,86 +487,6 @@ def _dispatch_alerts(
         if alerted:
             last_alerted[signal] = datetime.now(_IST)
             logger.info("Score-based alert sent: %s", signal)
-
-    # ── Supertrend strategy events ────────────────────────────────────────────
-    # Orders are now placed AND confirmed inside _refresh() before the state is
-    # mutated, so these events already reflect real, filled trades. This loop
-    # only notifies; it never places orders.
-    for event_type, payload in data.get("strategy_events", []):
-        if event_type == "open":
-            msg = format_position_open_alert(
-                ticker, payload["sizing"], payload["buy_signal"], capital, risk_pct
-            )
-            if broker:
-                msg += "\n✅ Order filled and confirmed."
-
-        elif event_type == "partial":
-            reason = payload.get("reason", "t1_hit")
-            msg = format_partial_alert(
-                ticker, payload["position"], payload["price"], payload["pnl"], reason
-            )
-            if broker:
-                msg += "\n✅ Sell order filled and confirmed."
-
-        elif event_type == "close":
-            msg = format_position_close_alert(ticker, payload["trade"], payload["reason"])
-            if broker:
-                msg += "\n✅ Sell order filled and confirmed."
-
-        elif event_type == "open_failed":
-            msg = (
-                f"⚠️ *Auto-trade BUY not placed — {ticker}*\n\n"
-                f"Tried to buy {payload['qty']} shares but the order did not fill "
-                f"(rejected, cancelled, or timed out). No position was opened. "
-                f"Check Zerodha and your funds."
-            )
-            logger.error("AUTO-TRADE BUY did not fill — qty=%d", payload["qty"])
-
-        elif event_type == "exit_failed":
-            msg = (
-                f"🚨 *Auto-trade SELL FAILED — {ticker}*\n\n"
-                f"Tried to sell {payload['qty']} shares ({payload['reason']}) but the "
-                f"order did not fill. Your position is STILL OPEN — please exit "
-                f"manually in Zerodha now."
-            )
-            logger.error(
-                "AUTO-TRADE SELL did not fill — qty=%d reason=%s",
-                payload["qty"], payload["reason"],
-            )
-
-        elif event_type == "insufficient_funds":
-            msg = (
-                f"💸 *Auto-trade BUY skipped — {ticker}*\n\n"
-                f"Signal fired but you have ₹{payload['have']:,.0f} available and the "
-                f"trade needs ₹{payload['need']:,.0f} ({payload['qty']} shares). "
-                f"Add funds or lower CAPITAL."
-            )
-            logger.warning(
-                "AUTO-TRADE BUY skipped — need ₹%.0f have ₹%.0f",
-                payload["need"], payload["have"],
-            )
-
-        elif event_type == "reconcile_warn":
-            msg = (
-                f"⚠️ *Auto-trade BUY skipped — {ticker}*\n\n"
-                f"A buy signal fired but Zerodha already shows {payload['held']} shares "
-                f"held that the bot wasn't tracking. No new order placed. Check your "
-                f"positions — fix the mismatch before the next signal."
-            )
-            logger.error("AUTO-TRADE BUY skipped — broker holds %d untracked", payload["held"])
-
-        elif event_type == "event_blocked":
-            msg = (
-                f"📅 *Auto-trade BUY skipped — {ticker}*\n\n"
-                f"A buy signal fired but earnings are within a couple of days. "
-                f"Skipping new entries to avoid overnight gap risk around results."
-            )
-            logger.warning("AUTO-TRADE BUY skipped — near earnings event")
-        else:
-            continue
-
-        _notify(msg)
-        logger.info("Strategy event alert sent: %s", event_type)
 
 
 def _broadcast(msg: str) -> None:
