@@ -51,7 +51,6 @@ from src.alerts import (
     send_whatsapp_alert,
     format_alert,
     format_whatsapp_alert,
-    should_alert,
     format_position_open_alert,
     format_partial_alert,
     format_position_close_alert,
@@ -340,7 +339,7 @@ def _dispatch_alerts(
             logger.info("Pre-open briefing sent")
 
     # ── Post-open update (9:20–9:59 AM, once per day) ────────────────────────
-    if notify_ready and now_t.hour == 9 and now_t.minute >= 20:
+    elif notify_ready and now_t.hour == 9 and now_t.minute >= 20:
         post_key = f"post_open_{now_t.date()}"
         if post_key not in last_alerted:
             q    = data.get("quote", {})
@@ -501,35 +500,40 @@ def _dispatch_alerts(
             last_alerted[shift_key] = datetime.now(_IST)
             logger.info("Sentiment shift alert sent")
 
-    # ── Strong score alert (existing behaviour) ───────────────────────────────
+    # ── Strong score alert ────────────────────────────────────────────────────
     score_result = data.get("score_result")
     quote        = data.get("quote")
-    if score_result and quote and should_alert(score_result, last_alerted):
-        alerted = False
-        signal  = score_result.get("signal", "Hold")
+    if score_result and quote:
+        signal = score_result.get("signal", "Hold")
+        if signal in ("Strong Buy", "Strong Sell"):
+            sig_key  = f"{signal}_{now_t.date()}"
+            last_t   = last_alerted.get(sig_key)
+            too_soon = last_t and (datetime.now(_IST) - last_t).total_seconds() < 1800
+            if not too_soon:
+                alerted = False
 
-        if tg_token and tg_chat_id:
-            _tg(format_alert(ticker, score_result, quote))
-            alerted = True
+                if tg_token and tg_chat_id:
+                    _tg(format_alert(ticker, score_result, quote))
+                    alerted = True
 
-        if wa_ready:
-            plain_msg = format_whatsapp_alert(
-                ticker,
-                score_result,
-                quote,
-                target_probs    = data.get("target_probs"),
-                intraday_probs  = data.get("intraday_probs"),
-                buy_signal      = data.get("buy_signal"),
-                strategy_state  = data.get("strategy_state"),
-                pnl_unrealised  = data.get("pnl_unrealised", 0.0),
-                halted_reason   = data.get("halted_reason", ""),
-            )
-            if _retry_send(send_whatsapp_alert, wa_sid, wa_token, wa_from, wa_to, plain_msg):
-                alerted = True
+                if wa_ready:
+                    plain_msg = format_whatsapp_alert(
+                        ticker,
+                        score_result,
+                        quote,
+                        target_probs    = data.get("target_probs"),
+                        intraday_probs  = data.get("intraday_probs"),
+                        buy_signal      = data.get("buy_signal"),
+                        strategy_state  = data.get("strategy_state"),
+                        pnl_unrealised  = data.get("pnl_unrealised", 0.0),
+                        halted_reason   = data.get("halted_reason", ""),
+                    )
+                    if _retry_send(send_whatsapp_alert, wa_sid, wa_token, wa_from, wa_to, plain_msg):
+                        alerted = True
 
-        if alerted:
-            last_alerted[signal] = datetime.now(_IST)
-            logger.info("Score-based alert sent: %s", signal)
+                if alerted:
+                    last_alerted[sig_key] = datetime.now(_IST)
+                    logger.info("Score-based alert sent: %s", signal)
 
 
 def _broadcast(msg: str) -> None:
@@ -650,19 +654,25 @@ def main() -> None:
                         _announce_active_once()
                     else:
                         logger.error("Kite auto_login failed — sending login URL")
-                        _broadcast(
-                            f"🔐 Kite auth needed\n\n"
-                            f"1. Open: {broker.login_url()}\n"
-                            f"2. Log in with your Zerodha credentials\n"
-                            f"3. Copy request_token from redirect URL\n"
-                            f"4. Reply: TOKEN <request_token>")
+                        if persisted_state.get("kite_login_url_date") != today_str:
+                            _broadcast(
+                                f"🔐 Kite auth needed\n\n"
+                                f"1. Open: {broker.login_url()}\n"
+                                f"2. Log in with your Zerodha credentials\n"
+                                f"3. Copy request_token from redirect URL\n"
+                                f"4. Reply: TOKEN <request_token>")
+                            persisted_state["kite_login_url_date"] = today_str
+                            save_state(persisted_state)
                         broker = None
                 else:
                     logger.warning("Kite credentials not in .env — sending login URL")
-                    _broadcast(
-                        f"🔐 Kite auth needed for auto-trading\n\n"
-                        f"Open this link and log in:\n{broker.login_url()}\n\n"
-                        f"Then reply: TOKEN <request_token>")
+                    if persisted_state.get("kite_login_url_date") != today_str:
+                        _broadcast(
+                            f"🔐 Kite auth needed for auto-trading\n\n"
+                            f"Open this link and log in:\n{broker.login_url()}\n\n"
+                            f"Then reply: TOKEN <request_token>")
+                        persisted_state["kite_login_url_date"] = today_str
+                        save_state(persisted_state)
                     broker = None
             else:
                 _announce_active_once()
