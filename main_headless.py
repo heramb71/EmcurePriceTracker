@@ -198,6 +198,12 @@ def _dispatch_alerts(
     tg_ready     = bool(tg_token and tg_chat_id)
     notify_ready = wa_ready or tg_ready
 
+    # When the managed-cycle owns the symbol it emits its own aligned alerts.
+    # Suppress the legacy intraday/Supertrend-flavoured alerts so the user never
+    # gets a contradicting +₹10/20/25 buy plan, a stale Supertrend panel, or a
+    # time-exit driven by the now-inactive Supertrend position.
+    managed_active = os.getenv("MANAGED_CYCLE", "false").lower() == "true"
+
     def _tg(msg: str) -> None:
         if tg_ready and not _retry_send(send_alert, tg_token, tg_chat_id, msg):
             logger.error("Telegram alert dropped after retry (%d chars)", len(msg))
@@ -396,8 +402,10 @@ def _dispatch_alerts(
             logger.info("EOD summary sent")
 
     # ── Intraday entry signal (BUY / STRONG_BUY) ─────────────────────────────
+    # Suppressed under the managed-cycle — its re-entry uses different levels
+    # (+₹15/20/30, qty from MANAGED_QTY) and emits its own BUY alert.
     intra_sig = data.get("intra_signal", {})
-    if intra_sig.get("action") in ("BUY", "STRONG_BUY"):
+    if not managed_active and intra_sig.get("action") in ("BUY", "STRONG_BUY"):
         # Key is date-scoped so a service restart never re-fires within the same day
         sig_key  = f"intra_{intra_sig['action']}_{now_t.date()}"
         last_t   = last_alerted.get(sig_key)
@@ -478,8 +486,10 @@ def _dispatch_alerts(
             logger.info("Target hit alert sent: %s", hit.get("label"))
 
     # ── Time-based exit alert ─────────────────────────────────────────────────
+    # Suppressed under the managed-cycle — time_action is computed from the
+    # inactive Supertrend position; the managed-cycle owns exits.
     time_act = data.get("time_action")
-    if time_act and notify_ready:
+    if time_act and notify_ready and not managed_active:
         ta_key   = f"time_{time_act['action']}_{now_t.date()}"
         last_t   = last_alerted.get(ta_key)
         too_soon = last_t and (datetime.now(_IST) - last_t).total_seconds() < 3600
@@ -506,9 +516,12 @@ def _dispatch_alerts(
             logger.info("Sentiment shift alert sent")
 
     # ── Strong score alert ────────────────────────────────────────────────────
+    # Suppressed under the managed-cycle — format_whatsapp_alert embeds a
+    # Supertrend strategy panel that no longer trades, so it would contradict
+    # the managed-cycle's own alerts.
     score_result = data.get("score_result")
     quote        = data.get("quote")
-    if score_result and quote:
+    if score_result and quote and not managed_active:
         signal = score_result.get("signal", "Hold")
         if signal in ("Strong Buy", "Strong Sell"):
             sig_key  = f"{signal}_{now_t.date()}"

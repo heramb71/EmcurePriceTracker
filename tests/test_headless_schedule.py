@@ -62,3 +62,45 @@ def test_holiday_during_runup_does_not_busy_spin(monkeypatch):
     monkeypatch.setattr(main_headless, "is_market_holiday", _only_jun16_holiday)
     # Even at 09:05 on a holiday the target must advance, never resolve to today.
     assert _next_wake_target(_ist(2026, 6, 16, 9, 5)) == _ist(2026, 6, 17, 9, 5)
+
+
+# ── Legacy-alert suppression under the managed-cycle ─────────────────────────
+# When MANAGED_CYCLE=true the managed-cycle emits its own aligned alerts, so the
+# old intraday/Supertrend alerts must be suppressed to avoid contradicting it.
+
+def _legacy_buy_data() -> dict:
+    return {
+        "intra_signal": {"action": "BUY"},
+        "quote":        {"price": 1700.0, "high": 1710.0, "low": 1690.0, "change_pct": -1.0},
+        "rupee_levels": {"qty": 8, "entry": 1700.0, "t1": 1710.0, "t2": 1720.0,
+                         "t3": 1725.0, "sl": 1690.0, "max_risk": 80},
+        "sma7_gap":     {"gap": -22, "sma7": 1722.0},
+        "trend_7d":     "Upward",
+        "trade_pred":   {"score": 60, "tier": "B — MODERATE", "reach_t1": 60,
+                         "reach_t2": 40, "reach_t3": 20, "p_stop": 30, "ev": 100},
+    }
+
+
+def _run_dispatch(monkeypatch, sent: list) -> None:
+    # No manual trade, WhatsApp send recorded instead of sent.
+    monkeypatch.setattr(main_headless, "check_and_mark", lambda *a, **k: [])
+    monkeypatch.setattr(main_headless, "send_whatsapp_alert", lambda *a, **k: sent.append(a) or True)
+    now = datetime(2026, 6, 18, 11, 0, tzinfo=_IST)   # 11:00 — outside every briefing window
+    main_headless._dispatch_alerts(
+        "EMCURE", _legacy_buy_data(), now, {},
+        "sid", "tok", "+1", "+91999", 100000.0, 4500.0, 1.0, "", "",
+    )
+
+
+def test_intraday_signal_fires_when_managed_cycle_off(monkeypatch):
+    monkeypatch.delenv("MANAGED_CYCLE", raising=False)
+    sent: list = []
+    _run_dispatch(monkeypatch, sent)
+    assert sent, "legacy intraday BUY alert should fire when managed-cycle is off"
+
+
+def test_intraday_signal_suppressed_when_managed_cycle_on(monkeypatch):
+    monkeypatch.setenv("MANAGED_CYCLE", "true")
+    sent: list = []
+    _run_dispatch(monkeypatch, sent)
+    assert sent == [], "legacy intraday BUY alert must be suppressed under managed-cycle"
