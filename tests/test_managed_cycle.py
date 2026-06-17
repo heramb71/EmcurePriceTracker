@@ -13,6 +13,7 @@ def _cfg(**over) -> ManagedConfig:
     base = dict(
         enabled=True, live=False, targets=(15.0, 20.0, 30.0),
         sl_rupees=100.0, qty=8, reentry_gap=20.0, reach_atr_factor=1.0,
+        max_daily_loss=800.0, reentry_cooldown_min=60.0, block_reentry_after_stop=True,
     )
     base.update(over)
     return ManagedConfig(**base)
@@ -168,3 +169,68 @@ def test_levels_block_includes_touch_odds_when_provided():
     block = format_levels_block(_cfg(), pos, sma7=1740.0, atr=35.0, probs=probs)
     assert "85%" in block and "72%" in block and "18%" in block
     assert "touching within" in block
+
+
+# ── Phase 2 safety guards: kill-switch, cooldown, stop-out, external close ────
+
+from datetime import datetime, timedelta, timezone
+from src.managed_cycle import reentry_blocked, set_position, get_position
+
+_IST = timezone(timedelta(hours=5, minutes=30))
+_NOW = datetime(2026, 6, 18, 11, 0, tzinfo=_IST)
+
+
+class _FillBroker:
+    def __init__(self, held, fill_price):
+        self._held, self._fill, self.orders = held, fill_price, []
+    def held_qty(self, ticker):
+        return self._held
+    def place_order_and_confirm(self, ticker, qty, side):
+        self.orders.append((side, qty))
+        return {"status": "COMPLETE", "fill_price": self._fill, "filled_qty": qty}
+
+
+def test_reentry_blocked_after_stop_out():
+    mc._save({"day": _NOW.date().isoformat(), "stopped_out_today": True})
+    assert "stopped out" in reentry_blocked(_cfg(), _NOW)
+
+
+def test_reentry_blocked_by_daily_loss_cap():
+    mc._save({"day": _NOW.date().isoformat(), "realized_pnl_today": -850.0})
+    assert "daily loss cap" in reentry_blocked(_cfg(max_daily_loss=800.0), _NOW)
+
+
+def test_reentry_blocked_by_cooldown():
+    mc._save({"day": _NOW.date().isoformat(),
+              "last_exit_at": (_NOW - timedelta(minutes=20)).isoformat()})
+    assert "cooldown" in reentry_blocked(_cfg(reentry_cooldown_min=60), _NOW)
+
+
+def test_reentry_allowed_next_day_resets_guards():
+    mc._save({"day": "2026-06-17", "stopped_out_today": True, "realized_pnl_today": -5000})
+    assert reentry_blocked(_cfg(), _NOW) is None      # new day → clean slate
+
+
+def test_live_stop_records_exit_and_blocks_reentry():
+    set_position(1733.10, 8, _cfg())                  # sl = 1633.10
+    broker = _FillBroker(held=8, fill_price=1633.0)
+    market = {"price": 1632.0, "day_high": 1700.0, "day_low": 1632.0, "atr": 35.0}
+    events = mc.step("EMCURE", market, broker, _cfg(live=True), now=_NOW)
+
+    assert ("SELL", 8) in broker.orders                # real exit placed
+    assert get_position() is None                      # position closed
+    state = mc._load()
+    assert state["stopped_out_today"] is True
+    assert state["realized_pnl_today"] < 0
+    assert reentry_blocked(_cfg(), _NOW + timedelta(minutes=5)) is not None  # halted
+
+
+def test_step_clears_position_when_broker_flat():
+    set_position(1733.10, 8, _cfg())
+    broker = _FillBroker(held=0, fill_price=0.0)        # Zerodha shows nothing
+    market = {"price": 1740.0, "day_high": 1745.0, "day_low": 1735.0, "atr": 35.0}
+    events = mc.step("EMCURE", market, broker, _cfg(live=True), now=_NOW)
+
+    assert [e[0] for e in events] == ["managed_closed_externally"]
+    assert get_position() is None
+    assert broker.orders == []                          # nothing sold — we held 0

@@ -713,7 +713,11 @@ def main() -> None:
     # ── Startup reconciliation ─────────────────────────────────────────────────
     # Detect divergence between what the bot believes it holds (strategy_state)
     # and what Zerodha actually shows, before the loop starts trading on it.
-    if broker:
+    # Skipped under the managed-cycle: Supertrend's strategy_state is inactive and
+    # stale (it still shows the converted position), so reconciling it against the
+    # broker would raise a false "RECONCILE MISMATCH". The managed-cycle does its
+    # own broker reconcile each step (adopt / external-close detection).
+    if broker and os.getenv("MANAGED_CYCLE", "false").lower() != "true":
         _reconcile_on_startup(broker, ticker, wa_sid, wa_token, wa_from, wa_to, wa_ready)
 
     while True:

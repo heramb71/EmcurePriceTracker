@@ -28,12 +28,17 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 _STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "managed_state.json")
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _now_ist() -> datetime:
+    return datetime.now(_IST)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -49,19 +54,29 @@ class ManagedConfig:
     qty: int                      # re-entry position size (shares)
     reentry_gap: float            # re-enter when price <= sma7 − reentry_gap
     reach_atr_factor: float       # target reachable if delta <= atr × this
+    max_daily_loss: float         # block new entries once realized day loss ≥ this (₹)
+    reentry_cooldown_min: float   # min minutes between an exit and the next entry
+    block_reentry_after_stop: bool  # no re-entry the same day as a stop-out
 
     @classmethod
     def from_env(cls) -> "ManagedConfig":
         raw = os.getenv("MANAGED_TARGETS", "15,20,30")
         targets = tuple(sorted(float(x) for x in raw.split(",") if x.strip()))
+        sl_rupees = float(os.getenv("MANAGED_SL", "100"))
+        qty       = int(os.getenv("MANAGED_QTY", "8"))
         return cls(
             enabled          = os.getenv("MANAGED_CYCLE", "false").lower() == "true",
             live             = os.getenv("MANAGED_CYCLE_LIVE", "false").lower() == "true",
             targets          = targets or (15.0, 20.0, 30.0),
-            sl_rupees        = float(os.getenv("MANAGED_SL", "100")),
-            qty              = int(os.getenv("MANAGED_QTY", "8")),
+            sl_rupees        = sl_rupees,
+            qty              = qty,
             reentry_gap      = float(os.getenv("MANAGED_REENTRY_GAP", "20")),
             reach_atr_factor = float(os.getenv("MANAGED_REACH_ATR_FACTOR", "1.0")),
+            # Default the daily-loss cap to one full stop (sl × qty): after one
+            # stop-out the realized loss hits the cap and re-entries halt for the day.
+            max_daily_loss   = float(os.getenv("MANAGED_MAX_DAILY_LOSS", str(sl_rupees * qty))),
+            reentry_cooldown_min     = float(os.getenv("MANAGED_REENTRY_COOLDOWN_MIN", "60")),
+            block_reentry_after_stop = os.getenv("MANAGED_BLOCK_REENTRY_AFTER_STOP", "true").lower() == "true",
         )
 
 
@@ -180,6 +195,60 @@ def clear_position() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Daily risk guards (kill-switch + re-entry cooldown)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _maybe_roll_day(now: datetime) -> None:
+    """Reset the day's realized-loss tally and stop-out flag at a date change."""
+    today = now.date().isoformat()
+    state = _load()
+    if state.get("day") != today:
+        state["day"] = today
+        state["realized_pnl_today"] = 0.0
+        state["stopped_out_today"] = False
+        _save(state)
+
+
+def _record_exit(pnl: float, is_stop: bool, now: datetime) -> None:
+    """Atomically close the position and book the exit into the day's tally so the
+    kill-switch and cooldown can see it."""
+    state = _load()
+    if state.get("day") != now.date().isoformat():
+        state["day"] = now.date().isoformat()
+        state["realized_pnl_today"] = 0.0
+        state["stopped_out_today"] = False
+    state["realized_pnl_today"] = round(state.get("realized_pnl_today", 0.0) + pnl, 2)
+    state["last_exit_at"] = now.isoformat()
+    if is_stop:
+        state["stopped_out_today"] = True
+    state.pop("position", None)
+    _save(state)
+
+
+def reentry_blocked(cfg: ManagedConfig, now: datetime) -> Optional[str]:
+    """Reason a re-entry is currently blocked, or None if allowed. Enforces the
+    daily-loss kill-switch, the same-day stop-out block, and the post-exit
+    cooldown — so the cycle can't churn straight back in after a stop."""
+    state = _load()
+    if state.get("day") != now.date().isoformat():
+        return None  # new day — counters reset, nothing blocks
+    if cfg.block_reentry_after_stop and state.get("stopped_out_today"):
+        return "stopped out earlier today"
+    if state.get("realized_pnl_today", 0.0) <= -cfg.max_daily_loss:
+        return f"daily loss cap ₹{cfg.max_daily_loss:,.0f} reached"
+    last = state.get("last_exit_at")
+    if last:
+        try:
+            secs = (now - datetime.fromisoformat(last)).total_seconds()
+            if 0 <= secs < cfg.reentry_cooldown_min * 60:
+                mins_left = (cfg.reentry_cooldown_min * 60 - secs) / 60
+                return f"re-entry cooldown ({mins_left:.0f} min left)"
+        except ValueError:
+            pass
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Orchestration (impure — broker calls + state writes + events)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -199,14 +268,25 @@ def _broker_avg_price(broker, ticker: str) -> float:
     return 0.0
 
 
-def step(ticker: str, market: dict, broker, cfg: ManagedConfig) -> list[tuple[str, dict]]:
+def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
+         now: Optional[datetime] = None) -> list[tuple[str, dict]]:
     """Run one managed-cycle step. Returns alert events (event_type, payload).
 
     Dry-run (cfg.live=False) announces what it WOULD do and places no orders.
     Hold/wait produce no event. Dry-run sell/buy/exit are de-duplicated per day
     so a held condition doesn't re-announce every cycle."""
+    now = now or _now_ist()
+    _maybe_roll_day(now)
     events: list[tuple[str, dict]] = []
     position = get_position()
+
+    # Safety: if we think we hold but the broker shows zero (manual sell, or a
+    # fill we missed), drop the stale record instead of trying to sell shares we
+    # no longer own. held_qty returns None on a query error — act only on a hard 0.
+    if position and broker is not None and broker.held_qty(ticker) == 0:
+        clear_position()
+        logger.warning("Managed-cycle: broker shows 0 — position closed externally, clearing")
+        return [("managed_closed_externally", {"ticker": ticker, "qty": position.get("qty")})]
 
     # Adopt a broker holding the cycle isn't tracking yet (e.g. shares converted
     # to delivery by hand) so it manages them from the first cycle.
@@ -228,9 +308,22 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig) -> list[tuple[st
     if decision.action in ("hold", "wait"):
         return events
 
+    # Risk guards gate re-entries only — exits are always allowed.
+    if decision.action == "reenter":
+        blocked = reentry_blocked(cfg, now)
+        if blocked:
+            logger.info("Managed-cycle re-entry blocked — %s", blocked)
+            state = _load()
+            sig   = f"{blocked}:{now.date()}"
+            if state.get("last_block_sig") != sig:
+                state["last_block_sig"] = sig
+                _save(state)
+                events.append(("managed_blocked", {"ticker": ticker, "reason": blocked}))
+            return events
+
     if not cfg.live:
         # De-dup the dry-run announcement: only fire when the decision changes.
-        sig   = f"{decision.action}:{decision.price}:{datetime.now().date()}"
+        sig   = f"{decision.action}:{decision.price}:{now.date()}"
         state = _load()
         if state.get("last_dryrun_sig") != sig:
             state["last_dryrun_sig"] = sig
@@ -244,13 +337,13 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig) -> list[tuple[st
 
     # ── LIVE execution (Phase 2) ─────────────────────────────────────────────
     if decision.action in ("sell", "exit_sl"):
-        return events + _execute_sell(ticker, decision, broker)
+        return events + _execute_sell(ticker, decision, broker, now)
     if decision.action == "reenter":
         return events + _execute_buy(ticker, decision, broker, cfg)
     return events
 
 
-def _execute_sell(ticker: str, decision: Decision, broker) -> list[tuple[str, dict]]:
+def _execute_sell(ticker: str, decision: Decision, broker, now: datetime) -> list[tuple[str, dict]]:
     events: list[tuple[str, dict]] = []
     pos = get_position() or {}
     fill = broker.place_order_and_confirm(ticker, decision.qty, "SELL") if broker else None
@@ -262,7 +355,9 @@ def _execute_sell(ticker: str, decision: Decision, broker) -> list[tuple[str, di
     exit_price = fill["fill_price"] if fill else decision.price
     entry      = float(pos.get("entry", exit_price))
     pnl        = int(round((exit_price - entry) * decision.qty))
-    clear_position()
+    # Books the P&L into the day's tally + sets the cooldown/stop-out flags so the
+    # kill-switch can halt re-entries — and closes the position atomically.
+    _record_exit(pnl, is_stop=(decision.action == "exit_sl"), now=now)
     logger.warning("Managed-cycle SOLD %d @ ₹%.2f  pnl=₹%d", decision.qty, exit_price, pnl)
     events.append(("managed_sell", {
         "ticker": ticker, "exit_price": exit_price, "qty": decision.qty,
@@ -393,5 +488,17 @@ def format_managed_event(ticker: str, event_type: str, p: dict) -> Optional[str]
         return (
             f"💸 *Managed BUY skipped — {ticker}*\n\n"
             f"Re-entry needs ₹{p['need']:,.0f} for {p['qty']} sh but only ₹{p['have']:,.0f} is available."
+        )
+    if event_type == "managed_blocked":
+        return (
+            f"⏸️ *Managed re-entry paused — {ticker}*\n\n"
+            f"A re-entry signalled but is blocked: {p['reason']}.\n"
+            f"No new position today unless this clears."
+        )
+    if event_type == "managed_closed_externally":
+        return (
+            f"ℹ️ *Managed position cleared — {ticker}*\n\n"
+            f"Zerodha shows 0 shares (sold outside the bot), so the tracked "
+            f"{p.get('qty', '?')}-share position was cleared. The cycle will look for a fresh entry."
         )
     return None

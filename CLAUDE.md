@@ -130,6 +130,10 @@ MANAGED_SL=100            # stop = entry − ₹100
 MANAGED_QTY=8             # re-entry position size (shares)
 MANAGED_REENTRY_GAP=20    # re-enter when price ≥ ₹20 below the 7-day SMA
 MANAGED_REACH_ATR_FACTOR=1.0  # a target is "reachable" if its delta ≤ ATR × this
+# Live-safety guards (Phase 2):
+MANAGED_MAX_DAILY_LOSS=   # ₹ realized-loss cap/day → halts re-entries (default sl×qty)
+MANAGED_REENTRY_COOLDOWN_MIN=60   # min minutes between an exit and the next entry
+MANAGED_BLOCK_REENTRY_AFTER_STOP=true  # no re-entry the same day after a stop-out
 ```
 
 **Alert channels (all additive — every alert fans out to each one configured):**
