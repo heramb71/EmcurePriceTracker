@@ -129,7 +129,8 @@ MANAGED_TARGETS=15,20,30  # rupee targets from entry; sells at highest reachable
 MANAGED_SL=100            # stop = entry − ₹100
 MANAGED_QTY=8             # re-entry position size (shares)
 MANAGED_REENTRY_GAP=20    # re-enter when price ≥ ₹20 below the 7-day SMA
-MANAGED_REACH_ATR_FACTOR=1.0  # a target is "reachable" if its delta ≤ ATR × this
+MANAGED_REACH_MIN_PROB=50 # aim for the highest target with reach-prob ≥ this %
+                          # (dynamic, from live price + 7/14/30-day moves)
 # Live-safety guards (Phase 2):
 MANAGED_MAX_DAILY_LOSS=   # ₹ realized-loss cap/day → halts re-entries (default sl×qty)
 MANAGED_REENTRY_COOLDOWN_MIN=60   # min minutes between an exit and the next entry

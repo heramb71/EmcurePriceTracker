@@ -112,7 +112,7 @@ from src.state import (
 )
 from src.events import is_near_event
 from src.managed_cycle import ManagedConfig, step as managed_step, get_position as managed_get_position
-from src.probability import touch_probabilities
+from src.probability import daily_reach_probs
 
 logger = logging.getLogger(__name__)
 
@@ -388,20 +388,18 @@ def _refresh(ticker: str, news_snapshot: dict | None = None, broker=None) -> dic
             "price":    quote["price"],
             "day_high": float(quote.get("high") or quote["price"]),
             "day_low":  float(quote.get("low")  or quote["price"]),
-            "atr":      atr,
             "gap":      compute_sma7_gap(quote["price"], df_daily)["gap"],
             "trend_7d": classify_7d_trend(df_daily),
         }
-        events = managed_step(ticker, mc_market, broker, mc_cfg)
+        events = managed_step(ticker, mc_market, broker, mc_cfg, df_daily=df_daily)
         # strategy_state is left untouched (Supertrend disabled); the managed
         # cycle keeps its own managed_state.json.
-        # Empirical touch-odds for the managed ladder, for the briefings.
+        # Dynamic reach-odds (current price, 7/14/30-day moves) for the briefings —
+        # the same model that drives the target pick, plus the stop's odds.
         _mc_pos = managed_get_position()
         if _mc_pos:
             _mc_up = [round(_mc_pos["entry"] + d, 2) for d in mc_cfg.targets]
-            managed_probs = touch_probabilities(
-                df_daily, quote["price"], _mc_up, _mc_pos["sl"], horizon_days=5
-            )
+            managed_probs = daily_reach_probs(df_daily, quote["price"], _mc_up, _mc_pos["sl"])
         else:
             managed_probs = {}
     else:

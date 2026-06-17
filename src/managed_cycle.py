@@ -53,7 +53,7 @@ class ManagedConfig:
     sl_rupees: float              # stop = entry − sl_rupees
     qty: int                      # re-entry position size (shares)
     reentry_gap: float            # re-enter when price <= sma7 − reentry_gap
-    reach_atr_factor: float       # target reachable if delta <= atr × this
+    reach_min_prob: float         # aim for the highest target with reach-prob ≥ this (%)
     max_daily_loss: float         # block new entries once realized day loss ≥ this (₹)
     reentry_cooldown_min: float   # min minutes between an exit and the next entry
     block_reentry_after_stop: bool  # no re-entry the same day as a stop-out
@@ -71,7 +71,7 @@ class ManagedConfig:
             sl_rupees        = sl_rupees,
             qty              = qty,
             reentry_gap      = float(os.getenv("MANAGED_REENTRY_GAP", "20")),
-            reach_atr_factor = float(os.getenv("MANAGED_REACH_ATR_FACTOR", "1.0")),
+            reach_min_prob   = float(os.getenv("MANAGED_REACH_MIN_PROB", "50")),
             # Default the daily-loss cap to one full stop (sl × qty): after one
             # stop-out the realized loss hits the cap and re-entries halt for the day.
             max_daily_loss   = float(os.getenv("MANAGED_MAX_DAILY_LOSS", str(sl_rupees * qty))),
@@ -93,30 +93,33 @@ class Decision:
 # Pure decision logic (no I/O — fully unit-testable)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def choose_target(entry: float, atr: float, cfg: ManagedConfig) -> Optional[dict]:
-    """Highest target reachable today, judged by the day's volatility (ATR).
+def choose_target(entry: float, probs: dict, cfg: ManagedConfig) -> Optional[dict]:
+    """Pick the target to aim for, dynamically, from reach-probabilities.
 
-    A target at entry+delta is 'reachable' if delta <= atr × reach_atr_factor —
-    i.e. a normal day's range plausibly covers the move. Returns the highest
-    reachable target, or None on a day too quiet to aim for even the smallest
-    delta (caller then just holds for the stop or a livelier day)."""
-    if atr <= 0:
+    Among the configured targets, take the HIGHEST-profit one whose probability of
+    being reached (from the current price — see probability.daily_reach_probs)
+    clears cfg.reach_min_prob; if none clear it, fall back to the single most
+    likely target so the position always has a realistic exit. `probs` is keyed by
+    the absolute target price. This replaces the old ATR test, which judged a
+    target by the day's *range* and so over-reached for the top target."""
+    if not cfg.targets:
         return None
-    headroom = atr * cfg.reach_atr_factor
-    reachable = [d for d in cfg.targets if d <= headroom]
-    if not reachable:
-        return None
-    delta = max(reachable)
-    return {"delta": delta, "price": round(entry + delta, 2), "label": f"+₹{delta:.0f}"}
+    scored = [(d, round(entry + d, 2)) for d in cfg.targets]
+    scored = [(d, price, float(probs.get(price, 0))) for d, price in scored]
+    reachable = [c for c in scored if c[2] >= cfg.reach_min_prob]
+    d, price, p = (max(reachable, key=lambda c: c[0])    # highest profit among likely
+                   if reachable else
+                   max(scored, key=lambda c: c[2]))       # else the most likely
+    return {"delta": d, "price": price, "label": f"+₹{d:.0f}", "prob": round(p)}
 
 
 def decide(position: Optional[dict], market: dict, cfg: ManagedConfig) -> Decision:
     """One cycle's decision. position carries entry/qty/sl (None = flat); market
-    carries price/day_high/day_low/atr/gap/trend_7d."""
+    carries price/day_high/day_low/gap/trend_7d and target_probs (from
+    probability.daily_reach_probs, keyed by target price)."""
     price = float(market.get("price", 0) or 0)
     high  = float(market.get("day_high", 0) or 0)
     low   = float(market.get("day_low", 0) or 0)
-    atr   = float(market.get("atr", 0) or 0)
 
     if position:
         entry = float(position["entry"])
@@ -127,8 +130,8 @@ def decide(position: Optional[dict], market: dict, cfg: ManagedConfig) -> Decisi
         if (low and low <= sl) or (price and price <= sl):
             return Decision("exit_sl", reason=f"Stop ₹{sl:,.2f} hit", price=sl, qty=qty)
 
-        # 2. Sell at the highest target the day can plausibly reach.
-        chosen = choose_target(entry, atr, cfg)
+        # 2. Sell at the highest target whose reach-probability clears the bar.
+        chosen = choose_target(entry, market.get("target_probs", {}), cfg)
         if chosen and ((high and high >= chosen["price"]) or price >= chosen["price"]):
             return Decision(
                 "sell", reason=f"Reached {chosen['label']} target ₹{chosen['price']:,.2f}",
@@ -137,7 +140,7 @@ def decide(position: Optional[dict], market: dict, cfg: ManagedConfig) -> Decisi
 
         # 3. Hold, waiting for the chosen target or the stop.
         tgt   = chosen["price"] if chosen else 0.0
-        label = chosen["label"] if chosen else "no target reachable today"
+        label = (f"{chosen['label']} ({chosen['prob']}%)" if chosen else "no target")
         detail = f" ₹{tgt:,.2f}" if tgt else ""
         return Decision("hold", reason=f"Holding for {label}{detail}", price=tgt, qty=qty, label=label)
 
@@ -279,7 +282,7 @@ def _broker_avg_price(broker, ticker: str) -> float:
 
 
 def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
-         now: Optional[datetime] = None) -> list[tuple[str, dict]]:
+         now: Optional[datetime] = None, df_daily=None) -> list[tuple[str, dict]]:
     """Run one managed-cycle step. Returns alert events (event_type, payload).
 
     Dry-run (cfg.live=False) announces what it WOULD do and places no orders.
@@ -312,6 +315,13 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
                 logger.warning("Managed-cycle adopted holding: %d @ ₹%.2f", held, avg)
                 if cfg.live:
                     _ensure_protective_stop(ticker, broker)   # resting exchange stop
+
+    # Dynamic reach-probabilities from the CURRENT price (7/14/30-day moves) so the
+    # target picker promotes higher targets only as they actually become likely.
+    if position and df_daily is not None and "target_probs" not in market:
+        from src.probability import daily_reach_probs
+        up_levels = [round(float(position["entry"]) + d, 2) for d in cfg.targets]
+        market = {**market, "target_probs": daily_reach_probs(df_daily, float(market.get("price", 0) or 0), up_levels)}
 
     decision = decide(position, market, cfg)
     logger.info("Managed-cycle decision: %s — %s", decision.action, decision.reason)
@@ -459,14 +469,15 @@ def _execute_buy(ticker: str, decision: Decision, broker, cfg: ManagedConfig) ->
 # ─────────────────────────────────────────────────────────────────────────────
 
 def format_levels_block(cfg: ManagedConfig, position: Optional[dict],
-                        sma7: float, atr: float, probs: Optional[dict] = None) -> str:
+                        sma7: float, probs: Optional[dict] = None) -> str:
     """Managed-cycle levels for the scheduled briefings — the target ladder + stop
     from the booked entry when holding, or the SMA7 re-entry trigger when flat.
     Replaces the legacy +₹10/20/25 probability ladder so every number a briefing
     shows matches what the cycle will actually trade.
 
-    `probs` (from probability.touch_probabilities, keyed by absolute level price
-    plus "stop") appends each level's empirical touch-odds when supplied."""
+    `probs` (from probability.daily_reach_probs, keyed by absolute target price
+    plus "stop") shows each level's dynamic reach-odds AND drives the chosen
+    target shown."""
     mode = "live" if cfg.live else "dry-run"
     if position:
         entry = float(position["entry"])
@@ -482,12 +493,10 @@ def format_levels_block(cfg: ManagedConfig, position: Optional[dict],
         sodds = f"  ·  {sp}%" if sp is not None else ""
         lines.append(f"Stop  ₹{sl:,.2f}  (−₹{cfg.sl_rupees:.0f} · ₹{cfg.sl_rupees * qty:,.0f}){sodds}")
         if probs:
-            lines.append("_odds = chance of touching within ~5 trading days (from history)_")
-        chosen = choose_target(entry, atr, cfg)
+            lines.append("_odds = chance of reaching from the live price within ~a day (7/14/30-day moves)_")
+        chosen = choose_target(entry, probs or {}, cfg)
         if chosen:
-            lines.append(f"Today's range favours exiting at {chosen['label']} → ₹{chosen['price']:,.2f}")
-        else:
-            lines.append("Today's range looks too quiet to reach a target — holding for the stop or a livelier day.")
+            lines.append(f"Aiming to sell all at {chosen['label']} → ₹{chosen['price']:,.2f}  ({chosen['prob']}% reach)")
         return "\n".join(lines)
 
     # Flat — waiting to re-enter.

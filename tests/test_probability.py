@@ -47,3 +47,20 @@ def test_targets_are_monotonic_non_increasing():
     df = _df(120, 1500.0, up_pct=0.03, dn_pct=0.02)
     p = touch_probabilities(df, 1500.0, [1515.0, 1530.0, 1545.0], 1400.0, horizon_days=5)
     assert p[1515.0] >= p[1530.0] >= p[1545.0]
+
+
+def test_daily_reach_probs_dynamic_from_current_price():
+    from src.probability import daily_reach_probs
+    df = _df(60, 1000.0, up_pct=0.03, dn_pct=0.02)   # +3% high, −2% low daily
+    p = daily_reach_probs(df, 1000.0, [1020.0, 1040.0], down_level=980.0)
+    assert p[1020.0] == 100      # +2% within the +3% daily up-move
+    assert p[1040.0] == 0        # +4% beyond it
+    assert p["stop"] == 100      # −2% within the −2% daily down-move
+
+
+def test_daily_reach_probs_rises_as_price_approaches_target():
+    from src.probability import daily_reach_probs
+    df = _df(60, 1000.0, up_pct=0.03, dn_pct=0.02)
+    far  = daily_reach_probs(df, 1000.0, [1040.0])    # needs +4% → unreachable
+    near = daily_reach_probs(df, 1025.0, [1040.0])    # needs +1.5% → reachable
+    assert near[1040.0] > far[1040.0]

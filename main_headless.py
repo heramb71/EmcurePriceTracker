@@ -211,9 +211,8 @@ def _dispatch_alerts(
         from src.managed_cycle import ManagedConfig, get_position, format_levels_block
         _mc_cfg = ManagedConfig.from_env()
         _mc_sma7 = float((data.get("sma7_gap") or {}).get("sma7", 0) or 0)
-        _mc_atr  = float((data.get("indicators") or {}).get("atr", 0) or 0)
         managed_block = format_levels_block(
-            _mc_cfg, get_position(), _mc_sma7, _mc_atr, data.get("managed_probs")
+            _mc_cfg, get_position(), _mc_sma7, data.get("managed_probs")
         )
 
     def _tg(msg: str) -> None:

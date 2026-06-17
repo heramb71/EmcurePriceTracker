@@ -12,7 +12,7 @@ from src.predictor import format_pre_open_briefing
 def _cfg(**over) -> ManagedConfig:
     base = dict(
         enabled=True, live=False, targets=(15.0, 20.0, 30.0),
-        sl_rupees=100.0, qty=8, reentry_gap=20.0, reach_atr_factor=1.0,
+        sl_rupees=100.0, qty=8, reentry_gap=20.0, reach_min_prob=50.0,
         max_daily_loss=800.0, reentry_cooldown_min=60.0, block_reentry_after_stop=True,
     )
     base.update(over)
@@ -24,20 +24,24 @@ def _isolate_state(tmp_path, monkeypatch):
     monkeypatch.setattr(mc, "_STATE_FILE", str(tmp_path / "managed_state.json"))
 
 
-# ── choose_target: highest reachable by ATR ──────────────────────────────────
+# ── choose_target: dynamic, probability-based ────────────────────────────────
 
-def test_choose_target_wide_day_picks_highest():
-    t = choose_target(1733.10, atr=35.0, cfg=_cfg())   # 35 covers all deltas
-    assert t["delta"] == 30.0 and t["price"] == 1763.10
-
-
-def test_choose_target_mid_day_picks_middle():
-    t = choose_target(1733.10, atr=22.0, cfg=_cfg())   # covers 15 & 20, not 30
-    assert t["delta"] == 20.0 and t["price"] == 1753.10
+def test_choose_target_picks_highest_above_threshold():
+    probs = {1748.10: 80, 1753.10: 60, 1763.10: 30}    # T1,T2 clear 50; T3 doesn't
+    t = choose_target(1733.10, probs, _cfg(reach_min_prob=50))
+    assert t["delta"] == 20.0 and t["price"] == 1753.10   # highest among the likely
 
 
-def test_choose_target_quiet_day_none_reachable():
-    assert choose_target(1733.10, atr=10.0, cfg=_cfg()) is None   # even +15 too far
+def test_choose_target_falls_back_to_most_likely():
+    probs = {1748.10: 40, 1753.10: 25, 1763.10: 10}    # none clear 50
+    t = choose_target(1733.10, probs, _cfg(reach_min_prob=50))
+    assert t["delta"] == 15.0 and t["price"] == 1748.10   # the most likely (T1)
+
+
+def test_choose_target_promotes_higher_as_probs_rise():
+    probs = {1748.10: 90, 1753.10: 70, 1763.10: 55}    # all clear 50
+    t = choose_target(1733.10, probs, _cfg(reach_min_prob=50))
+    assert t["delta"] == 30.0                              # highest profit among likely
 
 
 # ── decide: holding ──────────────────────────────────────────────────────────
@@ -46,23 +50,33 @@ def _pos(entry=1733.10, qty=8, sl=1633.10):
     return {"entry": entry, "qty": qty, "sl": sl}
 
 
+_HI_PROBS = {1748.10: 90, 1753.10: 80, 1763.10: 70}   # all clear → aim T3
+
+
 def test_decide_sell_when_high_reaches_chosen_target():
-    market = {"price": 1762, "day_high": 1764, "day_low": 1740, "atr": 35.0}
+    market = {"price": 1762, "day_high": 1764, "day_low": 1740, "target_probs": _HI_PROBS}
     d = decide(_pos(), market, _cfg())
     assert d.action == "sell" and d.price == 1763.10 and d.qty == 8
 
 
 def test_decide_exit_sl_takes_priority_over_target():
-    # Even on a wide day, a stop breach exits first (capital protection).
-    market = {"price": 1632, "day_high": 1800, "day_low": 1632, "atr": 35.0}
+    market = {"price": 1632, "day_high": 1800, "day_low": 1632, "target_probs": _HI_PROBS}
     d = decide(_pos(), market, _cfg())
     assert d.action == "exit_sl" and d.price == 1633.10
 
 
 def test_decide_hold_when_target_not_reached():
-    market = {"price": 1740, "day_high": 1745, "day_low": 1735, "atr": 35.0}
+    market = {"price": 1740, "day_high": 1745, "day_low": 1735, "target_probs": _HI_PROBS}
     d = decide(_pos(), market, _cfg())
-    assert d.action == "hold" and d.label == "+₹30"
+    assert d.action == "hold" and d.label.startswith("+₹30")
+
+
+def test_decide_picks_lower_target_when_top_unlikely():
+    # T3 below threshold → aim for the highest that clears it (T1 here).
+    probs = {1748.10: 65, 1753.10: 40, 1763.10: 20}
+    market = {"price": 1749, "day_high": 1749, "day_low": 1735, "target_probs": probs}
+    d = decide(_pos(), market, _cfg(reach_min_prob=50))
+    assert d.action == "sell" and d.price == 1748.10    # sold at T1, didn't hold for T3
 
 
 # ── decide: flat / re-entry ──────────────────────────────────────────────────
@@ -131,15 +145,15 @@ def test_step_dryrun_adopts_holding_and_announces_no_orders():
 
 def test_levels_block_holding_shows_managed_ladder():
     pos = {"entry": 1733.10, "qty": 8, "sl": 1633.10}
-    block = format_levels_block(_cfg(), pos, sma7=1740.0, atr=35.0)
+    block = format_levels_block(_cfg(), pos, sma7=1740.0)
     assert "holding 8 sh @ ₹1,733.10" in block
     assert "T1  ₹1,748.10" in block and "T3  ₹1,763.10" in block   # +15 / +30
     assert "Stop  ₹1,633.10" in block
-    assert "+₹30" in block                                          # highest reachable at ATR 35
+    assert "+₹30" in block                                          # T3 ladder line
 
 
 def test_levels_block_flat_shows_reentry_trigger():
-    block = format_levels_block(_cfg(), None, sma7=1740.0, atr=30.0)
+    block = format_levels_block(_cfg(), None, sma7=1740.0)
     assert "flat, watching to re-enter" in block
     assert "≤ ₹1,720.00" in block                                   # 1740 − reentry_gap 20
 
@@ -163,12 +177,13 @@ def test_pre_open_briefing_legacy_unchanged_without_block():
     assert "Chance of +₹10 profit" in msg          # legacy path intact (backward compatible)
 
 
-def test_levels_block_includes_touch_odds_when_provided():
+def test_levels_block_includes_reach_odds_and_chosen_target():
     pos = {"entry": 1733.10, "qty": 8, "sl": 1633.10}
     probs = {1748.10: 85, 1753.10: 78, 1763.10: 72, "stop": 18}
-    block = format_levels_block(_cfg(), pos, sma7=1740.0, atr=35.0, probs=probs)
+    block = format_levels_block(_cfg(reach_min_prob=50), pos, sma7=1740.0, probs=probs)
     assert "85%" in block and "72%" in block and "18%" in block
-    assert "touching within" in block
+    assert "reaching from the live price" in block
+    assert "Aiming to sell all at +₹30" in block      # all clear 50 → aim T3
 
 
 # ── Phase 2 safety guards: kill-switch, cooldown, stop-out, external close ────
