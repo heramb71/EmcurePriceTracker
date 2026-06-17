@@ -8,10 +8,14 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+from datetime import datetime, timedelta, timezone
+
 import requests
 
 import src.alerts as alerts
-from src.alerts import send_alert, send_whatsapp_alert
+from src.alerts import send_alert, send_whatsapp_alert, should_alert
+
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 
 # ── Telegram ─────────────────────────────────────────────────────────────────
@@ -54,6 +58,27 @@ def test_send_alert_unreachable_opens_circuit_breaker():
             assert mock_post.call_count == 1                    # only the first hit the network
     finally:
         alerts._tg_paused_until = 0.0   # never leak breaker state to other tests
+
+
+# ── WhatsApp (Twilio) ────────────────────────────────────────────────────────
+
+# ── should_alert (timezone safety) ───────────────────────────────────────────
+
+def test_should_alert_true_when_never_alerted():
+    assert should_alert({"signal": "Strong Buy"}, {}) is True
+
+
+def test_should_alert_false_for_non_strong_signal():
+    assert should_alert({"signal": "Buy"}, {}) is False
+
+
+def test_should_alert_with_aware_timestamp_does_not_raise():
+    """Regression: callers store an IST-aware datetime; should_alert must not
+    raise 'can't subtract offset-naive and offset-aware datetimes'."""
+    recent = {"Strong Buy": datetime.now(_IST) - timedelta(minutes=5)}
+    stale = {"Strong Buy": datetime.now(_IST) - timedelta(minutes=45)}
+    assert should_alert({"signal": "Strong Buy"}, recent) is False   # within 30-min cooldown
+    assert should_alert({"signal": "Strong Buy"}, stale) is True     # cooldown elapsed
 
 
 # ── WhatsApp (Twilio) ────────────────────────────────────────────────────────

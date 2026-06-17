@@ -69,10 +69,21 @@ _EVENING_HOUR = 20
 _WINDOW_MINUTES = 14          # briefing window: HH:00 – HH:14
 _SIGNAL_COOLDOWN_H = 4        # hours between intraday alerts per asset
 _REFRESH_SECONDS = int(os.getenv("CRYPTO_REFRESH_SECONDS", "600"))
+_SEND_RETRY_DELAY_S = 2
 
 
 def _now_ist() -> datetime:
     return datetime.now(_IST)
+
+
+def _retry_send(send_fn, *args) -> bool:
+    """Call a send function, retrying once after a short delay. Returns True if
+    either attempt succeeds — so a single transient network blip never silently
+    drops an alert. Mirrors main_headless._retry_send."""
+    if send_fn(*args):
+        return True
+    time.sleep(_SEND_RETRY_DELAY_S)
+    return send_fn(*args)
 
 
 def _in_window(now: datetime, hour: int) -> bool:
@@ -107,11 +118,12 @@ def main() -> None:
         logger.error("No alert channel configured — set TWILIO_* and/or TELEGRAM_* in .env")
 
     def _wa(msg: str) -> None:
-        """Fan out to WhatsApp (50/day cap) and Telegram."""
-        if wa_ready:
-            send_whatsapp_alert(wa_sid, wa_token, wa_from, wa_to, msg)
-        if tg_ready:
-            send_alert(tg_token, tg_chat_id, msg)
+        """Fan out to WhatsApp (50/day cap) and Telegram, retrying each leg once
+        on a transient failure so a single network blip never drops an alert."""
+        if wa_ready and not _retry_send(send_whatsapp_alert, wa_sid, wa_token, wa_from, wa_to, msg):
+            logger.error("WhatsApp alert dropped after retry (%d chars)", len(msg))
+        if tg_ready and not _retry_send(send_alert, tg_token, tg_chat_id, msg):
+            logger.error("Telegram alert dropped after retry (%d chars)", len(msg))
 
     last_alerted: dict = {}
     logger.info("Crypto tracker started. Refresh every %ds.", _REFRESH_SECONDS)

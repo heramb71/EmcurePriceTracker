@@ -410,4 +410,10 @@ def should_alert(score_result: dict, last_alerted: dict) -> bool:
     last_time = last_alerted.get(signal)
     if last_time is None:
         return True
-    return datetime.now() - last_time > timedelta(minutes=30)
+    # Match the awareness of the stored timestamp: callers store an
+    # IST-aware datetime, and subtracting a naive datetime.now() from it raises
+    # "can't subtract offset-naive and offset-aware datetimes" — the exact bug
+    # that crash-looped the headless loop. datetime.now(tz) mirrors whatever the
+    # stored value used (aware or naive), so the subtraction is always valid.
+    now = datetime.now(last_time.tzinfo)
+    return now - last_time > timedelta(minutes=30)
