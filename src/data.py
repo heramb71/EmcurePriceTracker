@@ -60,6 +60,11 @@ def fetch_daily(ticker: str, days: int = 100) -> Optional[pd.DataFrame]:
         logger.error("fetch_daily exhausted retries for %s", ticker)
         return None
     df = _normalise(raw)
+    # yfinance appends an all-NaN placeholder row for "today" before the session
+    # has data (pre-market). It poisons rolling indicators — most visibly ATR,
+    # whose True Range over the NaN row makes the latest value NaN → 0. Drop any
+    # row missing OHLC so every indicator sees only real bars.
+    df = df.dropna(subset=["open", "high", "low", "close"])
     return df.sort_values("date").reset_index(drop=True)
 
 

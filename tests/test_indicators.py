@@ -101,3 +101,14 @@ def test_compute_all_with_short_df_returns_none():
     # With only 5 rows, rolling windows produce NaN; result may be None
     # We just assert it doesn't raise
     assert result is None or result is not None
+
+
+def test_compute_atr_ignores_trailing_nan_row():
+    """yfinance's pre-market all-NaN 'today' row must not zero out ATR."""
+    import numpy as np
+    import pandas as pd
+    from src.indicators import compute_atr
+    rows = [{"high": 100 + i, "low": 90 + i, "close": 95 + i} for i in range(30)]
+    rows.append({"high": np.nan, "low": np.nan, "close": np.nan})   # today's placeholder
+    atr = compute_atr(pd.DataFrame(rows))
+    assert atr > 0

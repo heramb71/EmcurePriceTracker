@@ -49,6 +49,9 @@ def compute_ema(close: pd.Series, span: int) -> float:
 
 
 def compute_atr(df: pd.DataFrame, period: int = 14) -> float:
+    # Drop rows missing OHLC (e.g. yfinance's pre-market placeholder for today),
+    # otherwise the True Range over a NaN row makes the latest ATR NaN → 0.
+    df = df.dropna(subset=["high", "low", "close"])
     high = df["high"]
     low = df["low"]
     close = df["close"]
