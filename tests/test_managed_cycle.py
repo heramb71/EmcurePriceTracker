@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 
 import src.managed_cycle as mc
-from src.managed_cycle import ManagedConfig, choose_target, decide
+from src.managed_cycle import ManagedConfig, choose_target, decide, format_levels_block
+from src.predictor import format_pre_open_briefing
 
 
 def _cfg(**over) -> ManagedConfig:
@@ -123,3 +124,39 @@ def test_step_dryrun_adopts_holding_and_announces_no_orders():
     # Second identical cycle must NOT re-announce (de-dup).
     events2 = mc.step("EMCURE", market, broker, _cfg(live=False))
     assert [e[0] for e in events2] == []
+
+
+# ── Briefing levels block (managed ladder, not legacy +10/20/25) ─────────────
+
+def test_levels_block_holding_shows_managed_ladder():
+    pos = {"entry": 1733.10, "qty": 8, "sl": 1633.10}
+    block = format_levels_block(_cfg(), pos, sma7=1740.0, atr=35.0)
+    assert "holding 8 sh @ ₹1,733.10" in block
+    assert "T1  ₹1,748.10" in block and "T3  ₹1,763.10" in block   # +15 / +30
+    assert "Stop  ₹1,633.10" in block
+    assert "+₹30" in block                                          # highest reachable at ATR 35
+
+
+def test_levels_block_flat_shows_reentry_trigger():
+    block = format_levels_block(_cfg(), None, sma7=1740.0, atr=30.0)
+    assert "flat, watching to re-enter" in block
+    assert "≤ ₹1,720.00" in block                                   # 1740 − reentry_gap 20
+
+
+def test_pre_open_briefing_swaps_in_managed_block():
+    sentinel = "🎯 *Managed plan — holding 8 sh @ ₹1,733.10*"
+    msg = format_pre_open_briefing(
+        ticker="EMCURE", price=1733.10, sma7=1740.0, trend_7d="Upward", atr=35.0,
+        capital=100000, risk_rupees=4500, managed_block=sentinel,
+    )
+    assert sentinel in msg
+    assert "Chance of +₹10 profit" not in msg     # legacy probability ladder replaced
+    assert "Entry zones today" not in msg
+
+
+def test_pre_open_briefing_legacy_unchanged_without_block():
+    msg = format_pre_open_briefing(
+        ticker="EMCURE", price=1700.0, sma7=1722.0, trend_7d="Upward", atr=30.0,
+        capital=100000, risk_rupees=4500,
+    )
+    assert "Chance of +₹10 profit" in msg          # legacy path intact (backward compatible)

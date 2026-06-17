@@ -301,6 +301,38 @@ def _execute_buy(ticker: str, decision: Decision, broker, cfg: ManagedConfig) ->
 # Alert formatting
 # ─────────────────────────────────────────────────────────────────────────────
 
+def format_levels_block(cfg: ManagedConfig, position: Optional[dict],
+                        sma7: float, atr: float) -> str:
+    """Managed-cycle levels for the scheduled briefings — the target ladder + stop
+    from the booked entry when holding, or the SMA7 re-entry trigger when flat.
+    Replaces the legacy +₹10/20/25 probability ladder so every number a briefing
+    shows matches what the cycle will actually trade."""
+    mode = "live" if cfg.live else "dry-run"
+    if position:
+        entry = float(position["entry"])
+        qty   = int(position["qty"])
+        sl    = float(position["sl"])
+        lines = [f"🎯 *Managed plan — holding {qty} sh @ ₹{entry:,.2f}*  ({mode})"]
+        for i, d in enumerate(cfg.targets):
+            lines.append(f"T{i + 1}  ₹{entry + d:,.2f}  (+₹{d:.0f}  ·  ₹{d * qty:,.0f} on {qty})")
+        lines.append(f"Stop  ₹{sl:,.2f}  (−₹{cfg.sl_rupees:.0f}  ·  ₹{cfg.sl_rupees * qty:,.0f})")
+        chosen = choose_target(entry, atr, cfg)
+        if chosen:
+            lines.append(f"Today's range favours exiting at {chosen['label']} → ₹{chosen['price']:,.2f}")
+        else:
+            lines.append("Today's range looks too quiet to reach a target — holding for the stop or a livelier day.")
+        return "\n".join(lines)
+
+    # Flat — waiting to re-enter.
+    reentry = round(float(sma7) - cfg.reentry_gap, 2)
+    ladder  = "/".join(f"+₹{d:.0f}" for d in cfg.targets)
+    return "\n".join([
+        f"🎯 *Managed plan — flat, watching to re-enter*  ({mode})",
+        f"Re-enter when price ≤ ₹{reentry:,.2f}  (₹{cfg.reentry_gap:.0f} below the 7-day avg)",
+        f"Then {cfg.qty} sh, targets {ladder} from entry, stop −₹{cfg.sl_rupees:.0f}",
+    ])
+
+
 def format_managed_event(ticker: str, event_type: str, p: dict) -> Optional[str]:
     """WhatsApp/Telegram message for a managed-cycle event, or None to skip."""
     if event_type == "managed_adopt":

@@ -204,6 +204,16 @@ def _dispatch_alerts(
     # time-exit driven by the now-inactive Supertrend position.
     managed_active = os.getenv("MANAGED_CYCLE", "false").lower() == "true"
 
+    # Pre-built managed-cycle levels block for the briefings, so every number they
+    # show (targets, stop, re-entry) matches what the cycle actually trades.
+    managed_block = None
+    if managed_active:
+        from src.managed_cycle import ManagedConfig, get_position, format_levels_block
+        _mc_cfg = ManagedConfig.from_env()
+        _mc_sma7 = float((data.get("sma7_gap") or {}).get("sma7", 0) or 0)
+        _mc_atr  = float((data.get("indicators") or {}).get("atr", 0) or 0)
+        managed_block = format_levels_block(_mc_cfg, get_position(), _mc_sma7, _mc_atr)
+
     def _tg(msg: str) -> None:
         if tg_ready and not _retry_send(send_alert, tg_token, tg_chat_id, msg):
             logger.error("Telegram alert dropped after retry (%d chars)", len(msg))
@@ -344,6 +354,7 @@ def _dispatch_alerts(
                 indicators      = data.get("indicators", {}),
                 score_result    = data.get("score_result") or {},
                 now             = now_t,
+                managed_block   = managed_block,
             )
             _notify(msg)
             last_alerted[pre_key] = now_t
@@ -368,6 +379,7 @@ def _dispatch_alerts(
                 indicators    = data.get("indicators", {}),
                 score_result  = data.get("score_result") or {},
                 now           = now_t,
+                managed_block = managed_block,
             )
             _notify(msg)
             last_alerted[post_key] = now_t
@@ -396,6 +408,7 @@ def _dispatch_alerts(
                 indicators   = data.get("indicators", {}),
                 score_result = data.get("score_result") or {},
                 now          = now_t,
+                managed_block = managed_block,
             )
             _notify(msg)
             last_alerted[eod_key] = now_t

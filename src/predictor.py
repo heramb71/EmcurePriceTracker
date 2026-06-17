@@ -288,8 +288,13 @@ def format_pre_open_briefing(
     indicators: Optional[dict] = None,
     score_result: Optional[dict] = None,
     now: Optional[datetime] = None,
+    managed_block: Optional[str] = None,
 ) -> str:
-    """9:00 AM pre-open WhatsApp briefing."""
+    """9:00 AM pre-open WhatsApp briefing.
+
+    When managed_block is supplied (managed-cycle active) it replaces the legacy
+    entry-zone + +₹10/20/25 probability section, so the briefing shows the
+    managed ladder the cycle will actually trade."""
     if now is None:
         now = datetime.now()
 
@@ -325,22 +330,24 @@ def format_pre_open_briefing(
     if indicators and score_result:
         lines += ["", "📊 *Market Conditions:*"] + _market_conditions(indicators, score_result)
 
-    lines += [
-        "",
-        f"🎯 *Entry zones today:*",
-        f"Good entry:   ₹{buy_zone:,.2f} or below  (₹20 below average)",
-        f"Strong entry: ₹{strong_zone:,.2f} or below  (₹25 below average)",
-        "",
-        f"{tier_emoji} *Confidence: {confidence_label}*",
-        f"Chance of +₹10 profit: {pred['reach_t1']:.0f}%",
-        f"Chance of +₹20 profit: {pred['reach_t2']:.0f}%",
-        f"Chance of +₹25 profit: {pred['reach_t3']:.0f}%",
-        f"Chance of stop loss:   {pred['p_stop']:.0f}%",
-    ]
-
-    if qty > 0 and pred["ev"] != 0:
-        ev_label = "expected profit" if pred["ev"] > 0 else "expected loss"
-        lines.append(f"Expected outcome per trade: ₹{pred['ev']:+,.0f} ({ev_label})")
+    if managed_block:
+        lines += ["", managed_block]
+    else:
+        lines += [
+            "",
+            f"🎯 *Entry zones today:*",
+            f"Good entry:   ₹{buy_zone:,.2f} or below  (₹20 below average)",
+            f"Strong entry: ₹{strong_zone:,.2f} or below  (₹25 below average)",
+            "",
+            f"{tier_emoji} *Confidence: {confidence_label}*",
+            f"Chance of +₹10 profit: {pred['reach_t1']:.0f}%",
+            f"Chance of +₹20 profit: {pred['reach_t2']:.0f}%",
+            f"Chance of +₹25 profit: {pred['reach_t3']:.0f}%",
+            f"Chance of stop loss:   {pred['p_stop']:.0f}%",
+        ]
+        if qty > 0 and pred["ev"] != 0:
+            ev_label = "expected profit" if pred["ev"] > 0 else "expected loss"
+            lines.append(f"Expected outcome per trade: ₹{pred['ev']:+,.0f} ({ev_label})")
 
     if pred["prior_loss_note"] and prior_losses > 0:
         lines += ["", f"⚠️ {pred['prior_loss_note']}"]
@@ -362,8 +369,12 @@ def format_post_open_briefing(
     indicators: Optional[dict] = None,
     score_result: Optional[dict] = None,
     now: Optional[datetime] = None,
+    managed_block: Optional[str] = None,
 ) -> str:
-    """9:20 AM post-open WhatsApp message (ORB forming)."""
+    """9:20 AM post-open WhatsApp message (ORB forming).
+
+    When managed_block is supplied it replaces the legacy entry-zone + trade-plan
+    section with the managed-cycle ladder."""
     if now is None:
         now = datetime.now()
 
@@ -409,6 +420,10 @@ def format_post_open_briefing(
 
     if indicators and score_result:
         lines += ["", "📊 *Market Conditions:*"] + _market_conditions(indicators, score_result)
+
+    if managed_block:
+        lines += ["", managed_block]
+        return "\n".join(lines)
 
     lines += [
         "",
@@ -470,8 +485,12 @@ def format_eod_summary(
     indicators: Optional[dict] = None,
     score_result: Optional[dict] = None,
     now: Optional[datetime] = None,
+    managed_block: Optional[str] = None,
 ) -> str:
-    """3:30 PM end-of-day WhatsApp summary with tomorrow's setup preview."""
+    """3:30 PM end-of-day WhatsApp summary with tomorrow's setup preview.
+
+    When managed_block is supplied it replaces the legacy tomorrow-setup
+    entry-zone + probability section with the managed-cycle ladder."""
     if now is None:
         now = datetime.now()
 
@@ -525,11 +544,13 @@ def format_eod_summary(
     if indicators and score_result:
         lines += ["", "📊 *Today's Market Conditions:*"] + _market_conditions(indicators, score_result)
 
-    lines += [
-        "",
-        f"── *Tomorrow's Outlook* ──",
-        f"{setup_signal}",
-    ]
+    lines += ["", f"── *Tomorrow's Outlook* ──"]
+
+    if managed_block:
+        lines += ["", managed_block, "", f"⏰ Next update: tomorrow at 9:00 AM"]
+        return "\n".join(lines)
+
+    lines.append(f"{setup_signal}")
 
     if gap <= -15:
         lines += [
