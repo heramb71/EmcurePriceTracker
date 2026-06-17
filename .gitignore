@@ -38,3 +38,4 @@ trade_state.json
 *.pem
 emcurekey
 emcurekey.pub
+managed_state.json

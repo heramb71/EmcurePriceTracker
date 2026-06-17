@@ -117,10 +117,19 @@ TWILIO_AUTH_TOKEN=
 TWILIO_WHATSAPP_FROM=+14155238886
 TWILIO_WHATSAPP_TO=+91XXXXXXXXXX
 
-TELEGRAM_TOKEN=           # Optional (blocked in India — server still sends)
+TELEGRAM_TOKEN=           # Optional (periodically govt-blocked in India)
 TELEGRAM_CHAT_ID=         # Optional
 
 HEADLESS=true             # Set true on server
+
+# ── Managed-cycle auto-trader (replaces Supertrend when enabled) ──
+MANAGED_CYCLE=false       # true → run managed-cycle, DISABLE Supertrend for the symbol
+MANAGED_CYCLE_LIVE=false  # false → dry-run (announces decisions, NO real orders)
+MANAGED_TARGETS=15,20,30  # rupee targets from entry; sells at highest reachable today
+MANAGED_SL=100            # stop = entry − ₹100
+MANAGED_QTY=8             # re-entry position size (shares)
+MANAGED_REENTRY_GAP=20    # re-enter when price ≥ ₹20 below the 7-day SMA
+MANAGED_REACH_ATR_FACTOR=1.0  # a target is "reachable" if its delta ≤ ATR × this
 ```
 
 **Alert channels (all additive — every alert fans out to each one configured):**

@@ -290,6 +290,11 @@ def _dispatch_alerts(
                     f"Skipping new entries to avoid overnight gap risk around results."
                 )
                 logger.warning("AUTO-TRADE BUY skipped — near earnings event")
+            elif event_type.startswith("managed_"):
+                from src.managed_cycle import format_managed_event
+                msg = format_managed_event(ticker, event_type, payload)
+                if msg is None:
+                    continue
             else:
                 continue
 

@@ -111,6 +111,7 @@ from src.state import (
     PARTIAL_DENOM,
 )
 from src.events import is_near_event
+from src.managed_cycle import ManagedConfig, step as managed_step
 
 logger = logging.getLogger(__name__)
 
@@ -377,9 +378,26 @@ def _refresh(ticker: str, news_snapshot: dict | None = None, broker=None) -> dic
         else False
     )
 
-    state, events = _execute_strategy(
-        state, ticker, quote, st_last, buy_signal, sizing, atr, halted, broker, near_event
-    )
+    # Managed-cycle and Supertrend are mutually exclusive on the same symbol —
+    # two auto-traders would place competing orders. When MANAGED_CYCLE=true the
+    # Supertrend path is skipped entirely and the managed-cycle owns execution.
+    mc_cfg = ManagedConfig.from_env()
+    if mc_cfg.enabled:
+        mc_market = {
+            "price":    quote["price"],
+            "day_high": float(quote.get("high") or quote["price"]),
+            "day_low":  float(quote.get("low")  or quote["price"]),
+            "atr":      atr,
+            "gap":      compute_sma7_gap(quote["price"], df_daily)["gap"],
+            "trend_7d": classify_7d_trend(df_daily),
+        }
+        events = managed_step(ticker, mc_market, broker, mc_cfg)
+        # strategy_state is left untouched (Supertrend disabled); the managed
+        # cycle keeps its own managed_state.json.
+    else:
+        state, events = _execute_strategy(
+            state, ticker, quote, st_last, buy_signal, sizing, atr, halted, broker, near_event
+        )
     save_state(state)
 
     position_now = state.get("position")
