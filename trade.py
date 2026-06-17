@@ -9,6 +9,9 @@ Usage:
   python trade.py status            # show live P&L
   python trade.py holding           # read-only: show live Zerodha delivery
                                     # holding (qty + avg buy price) + levels
+  python trade.py track 1304 8 1265 1330 1356 1382
+                                    # track a position with EXPLICIT levels:
+                                    # entry qty sl t1 t2 t3 (for delivery/swing)
 """
 import os
 import sys
@@ -163,7 +166,37 @@ def cmd_holding(args: list[str]) -> None:
     print(f"      python trade.py buy {avg:.2f} {qty}\n")
 
 
-COMMANDS = {"buy": cmd_buy, "sell": cmd_sell, "status": cmd_status, "holding": cmd_holding}
+def cmd_track(args: list[str]) -> None:
+    """Register a position with EXPLICIT target/stop levels for alert tracking.
+    Use for delivery/swing holds where the fixed rupee levels don't fit."""
+    if len(args) < 6:
+        print("Usage: python trade.py track <entry> <qty> <sl> <t1> <t2> <t3>")
+        sys.exit(1)
+
+    entry, qty = float(args[0]), int(args[1])
+    sl, t1, t2, t3 = float(args[2]), float(args[3]), float(args[4]), float(args[5])
+
+    if qty <= 0:
+        print("❌ Invalid qty")
+        sys.exit(1)
+    if not (sl < entry < t1 < t2 < t3):
+        print(f"❌ Levels must satisfy SL < entry < T1 < T2 < T3")
+        print(f"   got SL={sl} entry={entry} T1={t1} T2={t2} T3={t3}")
+        sys.exit(1)
+
+    state = set_trade(entry, qty, sl=sl, t1=t1, t2=t2, t3=t3)
+    print(f"\n✅ Tracking {TICKER}.NS — {qty} sh @ ₹{state['entry']:,.2f}")
+    print(f"   SL  ₹{state['sl']:,.2f}  ({state['sl'] - entry:+.2f}/sh,  risk ₹{round((state['sl']-entry)*qty):+,.0f})")
+    print(f"   T1  ₹{state['t1']:,.2f}  (+₹{state['t1'] - entry:.2f}/sh,  +₹{round((state['t1']-entry)*qty):,.0f})")
+    print(f"   T2  ₹{state['t2']:,.2f}  (+₹{state['t2'] - entry:.2f}/sh,  +₹{round((state['t2']-entry)*qty):,.0f})")
+    print(f"   T3  ₹{state['t3']:,.2f}  (+₹{state['t3'] - entry:.2f}/sh,  +₹{round((state['t3']-entry)*qty):,.0f})")
+    print(f"\n   Level alerts fire as each is crossed. 'python trade.py sell' to close.\n")
+
+
+COMMANDS = {
+    "buy": cmd_buy, "sell": cmd_sell, "status": cmd_status,
+    "holding": cmd_holding, "track": cmd_track,
+}
 
 
 def main() -> None:
@@ -172,6 +205,7 @@ def main() -> None:
         print("       python trade.py sell")
         print("       python trade.py status")
         print("       python trade.py holding")
+        print("       python trade.py track <entry> <qty> <sl> <t1> <t2> <t3>")
         sys.exit(1)
 
     COMMANDS[sys.argv[1]](sys.argv[2:])

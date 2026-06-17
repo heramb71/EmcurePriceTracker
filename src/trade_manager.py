@@ -41,18 +41,31 @@ def _save(state: dict) -> None:
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
-def set_trade(entry: float, qty: int, risk_rupees: float = 4500.0) -> dict:
-    """Record a new manual entry. Overwrites any previous trade."""
-    sl = round(entry - risk_rupees / qty, 2)
+def set_trade(
+    entry: float,
+    qty: int,
+    risk_rupees: float = 4500.0,
+    *,
+    sl: float | None = None,
+    t1: float | None = None,
+    t2: float | None = None,
+    t3: float | None = None,
+) -> dict:
+    """Record a new manual entry. Overwrites any previous trade.
+
+    Levels default to the intraday convention (SL = entry − risk_rupees/qty,
+    T1/T2/T3 = entry + ₹10/₹20/₹25). Pass explicit sl/t1/t2/t3 to override — used
+    for delivery/swing positions where the fixed rupee levels don't fit (e.g. a
+    percentage-based stop, or a much wider target ladder)."""
     state = {
         "active":     True,
         "ticker":     os.getenv("TICKER", "EMCURE"),
         "entry":      round(entry, 2),
         "qty":        qty,
-        "sl":         sl,
-        "t1":         round(entry + 10, 2),
-        "t2":         round(entry + 20, 2),
-        "t3":         round(entry + 25, 2),
+        "sl":         round(entry - risk_rupees / qty, 2) if sl is None else round(sl, 2),
+        "t1":         round(entry + 10, 2) if t1 is None else round(t1, 2),
+        "t2":         round(entry + 20, 2) if t2 is None else round(t2, 2),
+        "t3":         round(entry + 25, 2) if t3 is None else round(t3, 2),
         "levels_hit": [],
         # high_watermark is intentionally absent here — check_and_mark sets it
         # on the first call so it captures the day's high *at trade entry time*,
@@ -112,6 +125,9 @@ def check_and_mark(price: float, day_high: float, day_low: float) -> list[dict]:
                 "pnl":   int(pnl),
                 "entry": state["entry"],
                 "qty":   state["qty"],
+                "t1":    state["t1"],
+                "t2":    state["t2"],
+                "t3":    state["t3"],
             })
             already_hit.add("SL")
             state["levels_hit"] = list(already_hit)
@@ -144,6 +160,9 @@ def check_and_mark(price: float, day_high: float, day_low: float) -> list[dict]:
                 "pnl":    int(pnl),
                 "entry":  state["entry"],
                 "qty":    state["qty"],
+                "t1":     state["t1"],
+                "t2":     state["t2"],
+                "t3":     state["t3"],
             })
             already_hit.add(label)
             state_dirty = True
@@ -188,6 +207,12 @@ def format_target_alert(ticker: str, hit: dict, current_price: float) -> str:
     qty     = hit["qty"]
     pnl     = hit["pnl"]
     kind    = hit["kind"]
+    # Real per-share moves — never hardcode +₹10/+20/+25, since explicit
+    # delivery/swing levels can be anything. Fall back to the level itself when a
+    # next-target isn't carried in the hit (older state).
+    t2      = hit.get("t2", level)
+    t3      = hit.get("t3", level)
+    delta   = round(level - entry, 2)
 
     if kind == "stoploss":
         lines = [
@@ -203,29 +228,29 @@ def format_target_alert(ticker: str, hit: dict, current_price: float) -> str:
         lines = [
             f"🎯 *First Target Hit — {ticker}*",
             "",
-            f"Price reached ₹{level:,.2f}  (+₹10 from entry ₹{entry:,.2f})",
+            f"Price reached ₹{level:,.2f}  (+₹{delta:,.2f}/sh from entry ₹{entry:,.2f})",
             f"Profit so far: ₹{pnl:+,.0f} on {qty} shares ✅",
             "",
-            f"👉 Sell half your shares now.",
+            f"👉 Sell part of your position now.",
             f"Move stop loss up to ₹{entry:,.2f} — no loss possible now.",
             "",
-            f"Next targets: ₹{entry+20:,.2f} (+₹20)  ·  ₹{entry+25:,.2f} (+₹25)",
+            f"Next targets: ₹{t2:,.2f} (+₹{round(t2-entry, 2):,.2f})  ·  ₹{t3:,.2f} (+₹{round(t3-entry, 2):,.2f})",
         ]
     elif label == "T2":
         lines = [
             f"🎯🎯 *Second Target Hit — {ticker}*",
             "",
-            f"Price reached ₹{level:,.2f}  (+₹20 from entry ₹{entry:,.2f})",
+            f"Price reached ₹{level:,.2f}  (+₹{delta:,.2f}/sh from entry ₹{entry:,.2f})",
             f"Profit so far: ₹{pnl:+,.0f} on {qty} shares ✅",
             "",
             f"👉 You can exit remaining shares here,",
-            f"or hold for final target ₹{entry+25:,.2f} (+₹25).",
+            f"or hold for final target ₹{t3:,.2f} (+₹{round(t3-entry, 2):,.2f}).",
         ]
     else:
         lines = [
             f"🏆 *Final Target Hit — {ticker}*",
             "",
-            f"Price reached ₹{level:,.2f}  (+₹25 from entry ₹{entry:,.2f})",
+            f"Price reached ₹{level:,.2f}  (+₹{delta:,.2f}/sh from entry ₹{entry:,.2f})",
             f"Total profit: ₹{pnl:+,.0f} on {qty} shares 🎉",
             "",
             f"👉 Exit full position. Great trade!",
