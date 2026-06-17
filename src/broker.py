@@ -385,6 +385,83 @@ class KiteBroker:
             return None
         return result
 
+    # ── Resting stop-loss (exchange-side protection) ──────────────────────────
+
+    def place_stop_loss(
+        self, ticker: str, qty: int, trigger_price: float,
+        slippage_pct: float = DEFAULT_SLIPPAGE_PCT,
+    ) -> Optional[str]:
+        """Place a RESTING SELL stop-loss (SL) order for a CNC long, so the
+        exchange enforces the stop even if the bot/server is offline. The order
+        triggers at trigger_price, then becomes a limit sell priced slightly below
+        the trigger so it fills on the way down. Returns order_id, or None.
+
+        Zerodha requires the trigger to sit below the live price for a sell SL —
+        callers pass a stop that is already below the market."""
+        from kiteconnect import KiteConnect
+
+        symbol = _nse_symbol(ticker)
+        try:
+            trig  = round(trigger_price, 1)
+            limit = round(trigger_price * (1 - slippage_pct / 100), 1)   # below trigger for a sell
+            order_id = self.kite.place_order(
+                variety=KiteConnect.VARIETY_REGULAR,
+                exchange=KiteConnect.EXCHANGE_NSE,
+                tradingsymbol=symbol,
+                transaction_type=KiteConnect.TRANSACTION_TYPE_SELL,
+                quantity=qty,
+                product=KiteConnect.PRODUCT_CNC,
+                order_type=KiteConnect.ORDER_TYPE_SL,
+                trigger_price=trig,
+                price=limit,
+            )
+            logger.warning(
+                "STOP PLACED  SELL %s  %d sh  trigger=₹%.1f  limit=₹%.1f  order_id=%s",
+                symbol, qty, trig, limit, order_id,
+            )
+            return str(order_id)
+        except Exception:
+            logger.exception("place_stop_loss FAILED  %s  qty=%d  trig=%.1f", symbol, qty, trigger_price)
+            return None
+
+    def cancel(self, order_id: str) -> bool:
+        """Cancel a resting order (e.g. the stop, before exiting at a target)."""
+        from kiteconnect import KiteConnect
+        try:
+            self.kite.cancel_order(variety=KiteConnect.VARIETY_REGULAR, order_id=order_id)
+            logger.warning("ORDER CANCELLED  id=%s", order_id)
+            return True
+        except Exception:
+            logger.exception("cancel failed for %s", order_id)
+            return False
+
+    def order_state(self, order_id: str) -> Optional[str]:
+        """Latest status string for an order (COMPLETE / TRIGGER PENDING / OPEN /
+        REJECTED / CANCELLED …), or None if it could not be read."""
+        try:
+            hist = self.kite.order_history(order_id)
+            return hist[-1].get("status") if hist else None
+        except Exception:
+            logger.exception("order_state failed for %s", order_id)
+            return None
+
+    def order_result(self, order_id: str) -> dict:
+        """One-shot {status, fill_price, filled_qty} for an order — used to detect
+        whether a resting stop has filled and at what price."""
+        try:
+            hist = self.kite.order_history(order_id)
+        except Exception:
+            logger.exception("order_result failed for %s", order_id)
+            return {"status": None, "fill_price": 0.0, "filled_qty": 0}
+        if not hist:
+            return {"status": None, "fill_price": 0.0, "filled_qty": 0}
+        last = hist[-1]
+        return {
+            "status":     last.get("status"),
+            "fill_price": float(last.get("average_price") or 0.0),
+            "filled_qty": int(last.get("filled_quantity") or 0),
+        }
+
 
 # ── Execution readiness check ────────────────────────────────────────────────
 

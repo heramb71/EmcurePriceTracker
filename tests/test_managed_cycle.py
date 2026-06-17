@@ -234,3 +234,103 @@ def test_step_clears_position_when_broker_flat():
     assert [e[0] for e in events] == ["managed_closed_externally"]
     assert get_position() is None
     assert broker.orders == []                          # nothing sold — we held 0
+
+
+# ── Resting exchange stop-loss lifecycle (live only) ─────────────────────────
+
+class _StopBroker:
+    """Broker stub that records stop placement / cancel and can simulate order
+    states + results, for the resting-stop lifecycle."""
+    def __init__(self, held, avg=0.0, sell_fill=0.0):
+        self._held, self._avg, self._sell_fill = held, avg, sell_fill
+        self.stops, self.cancels, self.sells, self.buys = [], [], [], []
+        self._n = 0
+        self._states: dict = {}
+        self._results: dict = {}
+
+    def held_qty(self, ticker):
+        return self._held
+
+    @property
+    def kite(self):
+        b = self
+        class _K:
+            def holdings(self):
+                return ([{"tradingsymbol": "EMCURE", "average_price": b._avg,
+                          "quantity": b._held, "t1_quantity": 0}] if b._held else [])
+            def positions(self):
+                return {"net": []}
+        return _K()
+
+    def available_funds(self):
+        return 1e9
+
+    def place_stop_loss(self, ticker, qty, trigger, slippage_pct=0.1):
+        self._n += 1
+        oid = f"stop{self._n}"
+        self.stops.append((qty, round(trigger, 2), oid))
+        self._states[oid] = "TRIGGER PENDING"
+        return oid
+
+    def cancel(self, oid):
+        self.cancels.append(oid)
+        self._states[oid] = "CANCELLED"
+        return True
+
+    def order_state(self, oid):
+        return self._states.get(oid)
+
+    def order_result(self, oid):
+        return self._results.get(oid, {"status": self._states.get(oid), "fill_price": 0.0, "filled_qty": 0})
+
+    def place_order_and_confirm(self, ticker, qty, side):
+        if side == "SELL":
+            self.sells.append(qty)
+            return {"status": "COMPLETE", "fill_price": self._sell_fill, "filled_qty": qty}
+        self.buys.append(qty)
+        return {"status": "COMPLETE", "fill_price": self._avg or 1700.0, "filled_qty": qty}
+
+
+_HOLD_MKT = {"price": 1740, "day_high": 1745, "day_low": 1735, "atr": 35.0, "gap": 0, "trend_7d": "Upward"}
+
+
+def test_live_adopt_places_resting_stop_at_sl():
+    broker = _StopBroker(held=8, avg=1733.10)
+    mc.step("EMCURE", _HOLD_MKT, broker, _cfg(live=True), now=_NOW)
+    assert broker.stops and broker.stops[0][0] == 8 and broker.stops[0][1] == 1633.10
+    assert get_position()["stop_order_id"] == "stop1"
+
+
+def test_live_target_sell_cancels_resting_stop():
+    broker = _StopBroker(held=8, avg=1733.10, sell_fill=1763.0)
+    mc.step("EMCURE", _HOLD_MKT, broker, _cfg(live=True), now=_NOW)     # adopt + stop
+    sid = get_position()["stop_order_id"]
+    hit = {"price": 1764, "day_high": 1765, "day_low": 1740, "atr": 35.0}
+    events = mc.step("EMCURE", hit, broker, _cfg(live=True), now=_NOW)  # target reached
+    assert sid in broker.cancels         # resting stop cancelled before selling
+    assert broker.sells == [8]
+    assert get_position() is None
+    assert any(e[0] == "managed_sell" for e in events)
+
+
+def test_settle_books_stop_fill_when_broker_flat():
+    set_position(1733.10, 8, _cfg())
+    mc._update_position(stop_order_id="stop1")
+    broker = _StopBroker(held=0)
+    broker._results["stop1"] = {"status": "COMPLETE", "fill_price": 1633.0, "filled_qty": 8}
+    market = {"price": 1632, "day_high": 1700, "day_low": 1632, "atr": 35.0}
+    events = mc.step("EMCURE", market, broker, _cfg(live=True), now=_NOW)
+    assert any(e[0] == "managed_sell" and e[1]["kind"] == "exit_sl" for e in events)
+    assert get_position() is None
+    st = mc._load()
+    assert st["stopped_out_today"] is True and st["realized_pnl_today"] < 0
+
+
+def test_ensure_stop_replaces_cancelled_stop():
+    set_position(1733.10, 8, _cfg())
+    mc._update_position(stop_order_id="stopX")
+    broker = _StopBroker(held=8, avg=1733.10)
+    broker._states["stopX"] = "CANCELLED"
+    mc.step("EMCURE", _HOLD_MKT, broker, _cfg(live=True), now=_NOW)
+    assert broker.stops                              # a fresh stop was placed
+    assert get_position()["stop_order_id"] != "stopX"

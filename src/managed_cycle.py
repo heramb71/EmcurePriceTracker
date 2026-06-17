@@ -174,6 +174,16 @@ def get_position() -> Optional[dict]:
     return _load().get("position")
 
 
+def _update_position(**fields) -> None:
+    """Merge fields into the stored position (e.g. the resting stop's order id)."""
+    state = _load()
+    pos = state.get("position")
+    if pos:
+        pos.update(fields)
+        state["position"] = pos
+        _save(state)
+
+
 def set_position(entry: float, qty: int, cfg: ManagedConfig) -> dict:
     pos = {
         "entry":     round(float(entry), 2),
@@ -280,13 +290,12 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
     events: list[tuple[str, dict]] = []
     position = get_position()
 
-    # Safety: if we think we hold but the broker shows zero (manual sell, or a
-    # fill we missed), drop the stale record instead of trying to sell shares we
-    # no longer own. held_qty returns None on a query error — act only on a hard 0.
+    # Safety: if we think we hold but the broker shows zero (the resting stop
+    # fired, or a manual sell), settle the record — booking a stop fill as such —
+    # instead of trying to sell shares we no longer own. held_qty returns None on
+    # a query error, so act only on a hard 0.
     if position and broker is not None and broker.held_qty(ticker) == 0:
-        clear_position()
-        logger.warning("Managed-cycle: broker shows 0 — position closed externally, clearing")
-        return [("managed_closed_externally", {"ticker": ticker, "qty": position.get("qty")})]
+        return _settle_closed_position(ticker, position, broker, cfg, now)
 
     # Adopt a broker holding the cycle isn't tracking yet (e.g. shares converted
     # to delivery by hand) so it manages them from the first cycle.
@@ -301,11 +310,17 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
                     "sl": position["sl"], "targets": list(cfg.targets),
                 }))
                 logger.warning("Managed-cycle adopted holding: %d @ ₹%.2f", held, avg)
+                if cfg.live:
+                    _ensure_protective_stop(ticker, broker)   # resting exchange stop
 
     decision = decide(position, market, cfg)
     logger.info("Managed-cycle decision: %s — %s", decision.action, decision.reason)
 
-    if decision.action in ("hold", "wait"):
+    if decision.action == "hold":
+        if cfg.live and broker is not None:
+            _ensure_protective_stop(ticker, broker)   # keep the stop resting while we hold
+        return events
+    if decision.action == "wait":
         return events
 
     # Risk guards gate re-entries only — exits are always allowed.
@@ -343,9 +358,54 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
     return events
 
 
+def _settle_closed_position(ticker: str, position: dict, broker, cfg: ManagedConfig,
+                            now: datetime) -> list[tuple[str, dict]]:
+    """The broker shows 0 while we thought we held. If our resting stop filled,
+    book it as a stop exit (with the real fill price + day tally); otherwise it
+    was closed outside the bot. Either way the position record is cleared."""
+    stop_id = position.get("stop_order_id")
+    if cfg.live and stop_id and broker is not None:
+        res = broker.order_result(stop_id)
+        if res.get("status") == "COMPLETE" and res.get("filled_qty"):
+            entry = float(position["entry"])
+            qty   = int(res["filled_qty"])
+            pnl   = int(round((res["fill_price"] - entry) * qty))
+            _record_exit(pnl, is_stop=True, now=now)
+            logger.warning("Managed-cycle STOP filled %d @ ₹%.2f  pnl=₹%d", qty, res["fill_price"], pnl)
+            return [("managed_sell", {
+                "ticker": ticker, "exit_price": res["fill_price"], "qty": qty,
+                "entry": entry, "pnl": pnl, "label": "", "kind": "exit_sl",
+                "reason": "Resting stop-loss filled at the exchange",
+            })]
+    clear_position()
+    logger.warning("Managed-cycle: broker shows 0 — position closed externally, clearing")
+    return [("managed_closed_externally", {"ticker": ticker, "qty": position.get("qty")})]
+
+
+def _ensure_protective_stop(ticker: str, broker) -> Optional[str]:
+    """Guarantee a resting exchange stop exists for the open position: place one
+    if missing, or re-place if the recorded order was cancelled/rejected. So the
+    exchange enforces the stop even if the bot is offline between cycles."""
+    position = get_position()
+    if not position or broker is None:
+        return None
+    stop_id = position.get("stop_order_id")
+    if stop_id:
+        status = broker.order_state(stop_id)
+        if status not in ("CANCELLED", "REJECTED"):
+            return stop_id            # resting / complete / unknown — leave it
+    new_id = broker.place_stop_loss(ticker, int(position["qty"]), float(position["sl"]))
+    _update_position(stop_order_id=new_id)
+    return new_id
+
+
 def _execute_sell(ticker: str, decision: Decision, broker, now: datetime) -> list[tuple[str, dict]]:
     events: list[tuple[str, dict]] = []
     pos = get_position() or {}
+    # Cancel the resting stop first so it can't also fire and double-sell.
+    stop_id = pos.get("stop_order_id")
+    if stop_id and broker is not None:
+        broker.cancel(stop_id)
     fill = broker.place_order_and_confirm(ticker, decision.qty, "SELL") if broker else None
     if broker and not fill:
         logger.error("Managed-cycle SELL did not fill — qty=%d", decision.qty)
@@ -385,6 +445,8 @@ def _execute_buy(ticker: str, decision: Decision, broker, cfg: ManagedConfig) ->
     entry = fill["fill_price"] if fill else decision.price
     qty   = fill["filled_qty"] if fill else decision.qty
     pos   = set_position(entry, qty, cfg)
+    if broker is not None:
+        _update_position(stop_order_id=broker.place_stop_loss(ticker, qty, pos["sl"]))
     logger.warning("Managed-cycle BOUGHT %d @ ₹%.2f", qty, entry)
     return [("managed_buy", {
         "ticker": ticker, "entry": entry, "qty": qty, "sl": pos["sl"],
