@@ -223,9 +223,12 @@ class KiteBroker:
                 if pos["tradingsymbol"] == symbol and pos["product"] == "CNC":
                     qty += int(pos.get("quantity") or 0)
             # CNC fills settle into holdings overnight (T+1), so check there too.
+            # Freshly bought / just-converted shares sit in t1_quantity until they
+            # settle into the demat 'quantity' — count both, or a real delivery
+            # holding reads as 0 the day it is opened (false RECONCILE MISMATCH).
             for h in self.kite.holdings():
                 if h.get("tradingsymbol") == symbol:
-                    qty += int(h.get("quantity") or 0)
+                    qty += int(h.get("quantity") or 0) + int(h.get("t1_quantity") or 0)
             return qty
         except Exception:
             logger.exception("held_qty failed for %s", symbol)
