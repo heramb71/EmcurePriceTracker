@@ -1,9 +1,20 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timedelta
 
+import requests
+
 logger = logging.getLogger(__name__)
+
+# Telegram circuit breaker. When api.telegram.org is unreachable — e.g. the
+# periodic government block in India — pause Telegram sends for this long instead
+# of paying two connect-timeouts (~6s) on every single alert dispatch and dumping
+# a full traceback each time. The breaker auto-closes after the cooldown, so
+# delivery resumes on its own once the block lifts — no restart or config change.
+_TG_COOLDOWN_S = 300.0
+_tg_paused_until = 0.0
 
 # Mirrors _HORIZON in scoring.py — days allowed per swing target
 _SWING_HORIZONS: dict[float, int] = {2.0: 3, 5.0: 5, 7.0: 10, 10.0: 15}
@@ -28,24 +39,40 @@ def _interpolate_prob(target_pct: float, probs: dict) -> int:
 
 def send_alert(token: str, chat_id: str, message: str) -> bool:
     """Send a Telegram message. Falls back to plain text if Markdown fails to
-    parse (stray * / _ in dynamic content), so a message is never dropped."""
-    try:
-        import requests
+    parse (stray * / _ in dynamic content), so a message is never dropped.
 
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
+    A connection/route failure (DNS or network blocked) opens a short circuit
+    breaker so a dead endpoint doesn't stall every later dispatch — see
+    _TG_COOLDOWN_S. The breaker auto-closes, so sending resumes on its own."""
+    global _tg_paused_until
+
+    if time.monotonic() < _tg_paused_until:
+        return False  # circuit open — Telegram known-unreachable, skip fast
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    try:
         resp = requests.post(
             url,
             json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"},
-            timeout=10,
+            timeout=(3.05, 7),
         )
         if resp.status_code == 200:
             return True
         # Markdown parse errors return 400 — retry as plain text.
         logger.warning("Telegram Markdown send failed (%s); retrying plain", resp.status_code)
         resp = requests.post(
-            url, json={"chat_id": chat_id, "text": message}, timeout=10
+            url, json={"chat_id": chat_id, "text": message}, timeout=(3.05, 7)
         )
         return resp.status_code == 200
+    except requests.exceptions.RequestException as exc:
+        # Network-level failure (e.g. ENETUNREACH during the India block). Open
+        # the breaker so we stop hammering a dead endpoint every dispatch.
+        _tg_paused_until = time.monotonic() + _TG_COOLDOWN_S
+        logger.warning(
+            "Telegram unreachable (%s) — pausing Telegram sends for %.0fs",
+            exc.__class__.__name__, _TG_COOLDOWN_S,
+        )
+        return False
     except Exception:
         logger.exception("send_alert failed")
         return False
