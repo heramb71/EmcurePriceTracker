@@ -160,3 +160,11 @@ def test_pre_open_briefing_legacy_unchanged_without_block():
         capital=100000, risk_rupees=4500,
     )
     assert "Chance of +₹10 profit" in msg          # legacy path intact (backward compatible)
+
+
+def test_levels_block_includes_touch_odds_when_provided():
+    pos = {"entry": 1733.10, "qty": 8, "sl": 1633.10}
+    probs = {1748.10: 85, 1753.10: 78, 1763.10: 72, "stop": 18}
+    block = format_levels_block(_cfg(), pos, sma7=1740.0, atr=35.0, probs=probs)
+    assert "85%" in block and "72%" in block and "18%" in block
+    assert "touching within" in block

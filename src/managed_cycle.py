@@ -302,11 +302,14 @@ def _execute_buy(ticker: str, decision: Decision, broker, cfg: ManagedConfig) ->
 # ─────────────────────────────────────────────────────────────────────────────
 
 def format_levels_block(cfg: ManagedConfig, position: Optional[dict],
-                        sma7: float, atr: float) -> str:
+                        sma7: float, atr: float, probs: Optional[dict] = None) -> str:
     """Managed-cycle levels for the scheduled briefings — the target ladder + stop
     from the booked entry when holding, or the SMA7 re-entry trigger when flat.
     Replaces the legacy +₹10/20/25 probability ladder so every number a briefing
-    shows matches what the cycle will actually trade."""
+    shows matches what the cycle will actually trade.
+
+    `probs` (from probability.touch_probabilities, keyed by absolute level price
+    plus "stop") appends each level's empirical touch-odds when supplied."""
     mode = "live" if cfg.live else "dry-run"
     if position:
         entry = float(position["entry"])
@@ -314,8 +317,15 @@ def format_levels_block(cfg: ManagedConfig, position: Optional[dict],
         sl    = float(position["sl"])
         lines = [f"🎯 *Managed plan — holding {qty} sh @ ₹{entry:,.2f}*  ({mode})"]
         for i, d in enumerate(cfg.targets):
-            lines.append(f"T{i + 1}  ₹{entry + d:,.2f}  (+₹{d:.0f}  ·  ₹{d * qty:,.0f} on {qty})")
-        lines.append(f"Stop  ₹{sl:,.2f}  (−₹{cfg.sl_rupees:.0f}  ·  ₹{cfg.sl_rupees * qty:,.0f})")
+            lvl = round(entry + d, 2)
+            p   = (probs or {}).get(lvl)
+            odds = f"  ·  {p}%" if p is not None else ""
+            lines.append(f"T{i + 1}  ₹{lvl:,.2f}  (+₹{d:.0f} · ₹{d * qty:,.0f}){odds}")
+        sp   = (probs or {}).get("stop")
+        sodds = f"  ·  {sp}%" if sp is not None else ""
+        lines.append(f"Stop  ₹{sl:,.2f}  (−₹{cfg.sl_rupees:.0f} · ₹{cfg.sl_rupees * qty:,.0f}){sodds}")
+        if probs:
+            lines.append("_odds = chance of touching within ~5 trading days (from history)_")
         chosen = choose_target(entry, atr, cfg)
         if chosen:
             lines.append(f"Today's range favours exiting at {chosen['label']} → ₹{chosen['price']:,.2f}")

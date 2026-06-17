@@ -111,7 +111,8 @@ from src.state import (
     PARTIAL_DENOM,
 )
 from src.events import is_near_event
-from src.managed_cycle import ManagedConfig, step as managed_step
+from src.managed_cycle import ManagedConfig, step as managed_step, get_position as managed_get_position
+from src.probability import touch_probabilities
 
 logger = logging.getLogger(__name__)
 
@@ -394,10 +395,20 @@ def _refresh(ticker: str, news_snapshot: dict | None = None, broker=None) -> dic
         events = managed_step(ticker, mc_market, broker, mc_cfg)
         # strategy_state is left untouched (Supertrend disabled); the managed
         # cycle keeps its own managed_state.json.
+        # Empirical touch-odds for the managed ladder, for the briefings.
+        _mc_pos = managed_get_position()
+        if _mc_pos:
+            _mc_up = [round(_mc_pos["entry"] + d, 2) for d in mc_cfg.targets]
+            managed_probs = touch_probabilities(
+                df_daily, quote["price"], _mc_up, _mc_pos["sl"], horizon_days=5
+            )
+        else:
+            managed_probs = {}
     else:
         state, events = _execute_strategy(
             state, ticker, quote, st_last, buy_signal, sizing, atr, halted, broker, near_event
         )
+        managed_probs = {}
     save_state(state)
 
     position_now = state.get("position")
@@ -448,6 +459,7 @@ def _refresh(ticker: str, news_snapshot: dict | None = None, broker=None) -> dic
         "pnl_unrealised": pnl_unr,
         "halted_reason":  halted_reason if halted else "",
         "strategy_events": events,
+        "managed_probs":  managed_probs,
         # Intraday strategy
         "sma7_gap":         sma7_gap,
         "trend_7d":         trend_7d,

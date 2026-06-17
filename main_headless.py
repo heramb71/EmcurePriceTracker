@@ -212,7 +212,9 @@ def _dispatch_alerts(
         _mc_cfg = ManagedConfig.from_env()
         _mc_sma7 = float((data.get("sma7_gap") or {}).get("sma7", 0) or 0)
         _mc_atr  = float((data.get("indicators") or {}).get("atr", 0) or 0)
-        managed_block = format_levels_block(_mc_cfg, get_position(), _mc_sma7, _mc_atr)
+        managed_block = format_levels_block(
+            _mc_cfg, get_position(), _mc_sma7, _mc_atr, data.get("managed_probs")
+        )
 
     def _tg(msg: str) -> None:
         if tg_ready and not _retry_send(send_alert, tg_token, tg_chat_id, msg):
