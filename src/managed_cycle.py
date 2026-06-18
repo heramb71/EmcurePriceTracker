@@ -115,8 +115,13 @@ def choose_target(entry: float, probs: dict, cfg: ManagedConfig) -> Optional[dic
 
 def decide(position: Optional[dict], market: dict, cfg: ManagedConfig) -> Decision:
     """One cycle's decision. position carries entry/qty/sl (None = flat); market
-    carries price/day_high/day_low/gap/trend_7d and target_probs (from
-    probability.daily_reach_probs, keyed by target price)."""
+    carries price/day_high/day_low/gap/trend_7d.
+
+    The held-position exit is a mechanical touched-target FLOOR, deliberately NOT
+    gated on a moving reach-probability forecast — that forecast-chasing was the
+    bug that let a touched +₹20 rung slip while the cycle aimed at +₹30 and gave
+    everything back. Probability now only feeds the briefing display
+    (choose_target / format_levels_block)."""
     price = float(market.get("price", 0) or 0)
     high  = float(market.get("day_high", 0) or 0)
     low   = float(market.get("day_low", 0) or 0)
@@ -130,19 +135,43 @@ def decide(position: Optional[dict], market: dict, cfg: ManagedConfig) -> Decisi
         if (low and low <= sl) or (price and price <= sl):
             return Decision("exit_sl", reason=f"Stop ₹{sl:,.2f} hit", price=sl, qty=qty)
 
-        # 2. Sell at the highest target whose reach-probability clears the bar.
-        chosen = choose_target(entry, market.get("target_probs", {}), cfg)
-        if chosen and ((high and high >= chosen["price"]) or price >= chosen["price"]):
+        # 2. Touched-target floor. Once the day's high prints a rung it becomes a
+        #    locked floor: ride above it toward the next rung, but never give a
+        #    touched rung back — sell on a pullback to the floor, and sell outright
+        #    once the top rung is reached.
+        ladder  = sorted(round(entry + d, 2) for d in cfg.targets)
+        top     = ladder[-1]
+        touched = [t for t in ladder if (high and high >= t) or price >= t]
+
+        if touched:
+            floor  = max(touched)
+            fdelta = floor - entry
+            if floor >= top:                         # top rung reached — book it
+                return Decision(
+                    "sell", price=floor, qty=qty, label=f"+₹{fdelta:.0f}",
+                    reason=f"Top target ₹{floor:,.2f} (+₹{fdelta:.0f}) reached",
+                )
+            if price <= floor:                       # pulled back to a touched rung
+                return Decision(
+                    "sell", price=price, qty=qty, label=f"+₹{fdelta:.0f}",
+                    reason=(f"Pulled back to touched +₹{fdelta:.0f} floor — "
+                            f"booking ₹{price:,.2f}"),
+                )
+            nxt    = min(t for t in ladder if t > floor)   # above floor → ride up
+            ndelta = nxt - entry
             return Decision(
-                "sell", reason=f"Reached {chosen['label']} target ₹{chosen['price']:,.2f}",
-                price=chosen["price"], qty=qty, label=chosen["label"],
+                "hold", price=nxt, qty=qty, label=f"+₹{ndelta:.0f}",
+                reason=(f"+₹{fdelta:.0f} floor locked; riding to +₹{ndelta:.0f} "
+                        f"(₹{nxt:,.2f})"),
             )
 
-        # 3. Hold, waiting for the chosen target or the stop.
-        tgt   = chosen["price"] if chosen else 0.0
-        label = (f"{chosen['label']} ({chosen['prob']}%)" if chosen else "no target")
-        detail = f" ₹{tgt:,.2f}" if tgt else ""
-        return Decision("hold", reason=f"Holding for {label}{detail}", price=tgt, qty=qty, label=label)
+        # 3. No rung touched yet — hold for the first target.
+        first  = ladder[0]
+        fdelta = first - entry
+        return Decision(
+            "hold", price=first, qty=qty, label=f"+₹{fdelta:.0f}",
+            reason=f"Holding for first target +₹{fdelta:.0f} (₹{first:,.2f})",
+        )
 
     # Flat → SMA7 mean-reversion re-entry.
     gap   = float(market.get("gap", 0) or 0)          # price − sma7 (negative = below)

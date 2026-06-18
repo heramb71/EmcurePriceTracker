@@ -50,33 +50,47 @@ def _pos(entry=1733.10, qty=8, sl=1633.10):
     return {"entry": entry, "qty": qty, "sl": sl}
 
 
-_HI_PROBS = {1748.10: 90, 1753.10: 80, 1763.10: 70}   # all clear → aim T3
+# The held-position exit is now a mechanical touched-target FLOOR (no probability
+# gating). Ladder off entry 1733.10 → T1 1748.10, T2 1753.10, T3 1763.10.
 
-
-def test_decide_sell_when_high_reaches_chosen_target():
-    market = {"price": 1762, "day_high": 1764, "day_low": 1740, "target_probs": _HI_PROBS}
+def test_decide_sell_when_top_target_reached():
+    market = {"price": 1762, "day_high": 1764, "day_low": 1740}      # high clears T3
     d = decide(_pos(), market, _cfg())
     assert d.action == "sell" and d.price == 1763.10 and d.qty == 8
 
 
 def test_decide_exit_sl_takes_priority_over_target():
-    market = {"price": 1632, "day_high": 1800, "day_low": 1632, "target_probs": _HI_PROBS}
+    market = {"price": 1632, "day_high": 1800, "day_low": 1632}
     d = decide(_pos(), market, _cfg())
     assert d.action == "exit_sl" and d.price == 1633.10
 
 
-def test_decide_hold_when_target_not_reached():
-    market = {"price": 1740, "day_high": 1745, "day_low": 1735, "target_probs": _HI_PROBS}
+def test_decide_hold_for_first_target_when_nothing_touched():
+    market = {"price": 1740, "day_high": 1745, "day_low": 1735}      # below T1
     d = decide(_pos(), market, _cfg())
-    assert d.action == "hold" and d.label.startswith("+₹30")
+    assert d.action == "hold" and d.label == "+₹15"                  # waiting on first rung
 
 
-def test_decide_picks_lower_target_when_top_unlikely():
-    # T3 below threshold → aim for the highest that clears it (T1 here).
-    probs = {1748.10: 65, 1753.10: 40, 1763.10: 20}
-    market = {"price": 1749, "day_high": 1749, "day_low": 1735, "target_probs": probs}
-    d = decide(_pos(), market, _cfg(reach_min_prob=50))
-    assert d.action == "sell" and d.price == 1748.10    # sold at T1, didn't hold for T3
+def test_decide_books_touched_t2_floor_on_pullback():
+    # The live bug: high prints T2 (1753.10), T3 (1763.10) never hits, price slips
+    # back below T2 → SELL at market, booking the touched +₹20 floor.
+    market = {"price": 1750, "day_high": 1758, "day_low": 1748}
+    d = decide(_pos(), market, _cfg())
+    assert d.action == "sell" and d.label == "+₹20" and d.price == 1750
+
+
+def test_decide_rides_above_touched_floor_toward_next_rung():
+    # T2 touched but price still ABOVE it → ride toward T3, +₹20 locked as the floor.
+    market = {"price": 1756, "day_high": 1758, "day_low": 1750}
+    d = decide(_pos(), market, _cfg())
+    assert d.action == "hold" and d.label == "+₹30"                  # aiming next rung
+
+
+def test_decide_today_scenario_pullback_to_t2_books_it():
+    # Exact 2026-06-18 case: entry 1733.10, day high 1758 (T2 touched, T3 missed).
+    # A pullback to/under the T2 rung books +₹20 — not the old bug holding for T3.
+    d = decide(_pos(), {"price": 1753.10, "day_high": 1758, "day_low": 1748}, _cfg())
+    assert d.action == "sell" and d.label == "+₹20" and d.price == 1753.10
 
 
 # ── decide: flat / re-entry ──────────────────────────────────────────────────
