@@ -22,13 +22,23 @@ _STAMP_PCT = 0.00015
 _GST_PCT = 0.18
 # Zerodha brokerage on delivery.
 _BROKERAGE = 0.0
+# Depository (DP) charge on the SELL side: flat per scrip per day, independent of
+# qty — Zerodha ₹13.5 + 18% GST ≈ ₹15.93. It matters most at small capital, where
+# it can be the largest single component of a low-quantity trade.
+_DP_CHARGE = round(13.5 * (1 + _GST_PCT), 2)
 
 
-def compute_charges(entry: float, exit_price: float, qty: int) -> float:
+def compute_charges(
+    entry: float, exit_price: float, qty: int, include_dp: bool = False
+) -> float:
     """
     Total round-trip charges (buy + sell) for a CNC delivery trade, in rupees.
 
     entry/exit_price are per-share prices; qty is the number of shares.
+
+    include_dp adds the flat DP sell charge (~₹15.93). It defaults to False to
+    preserve the original behaviour for existing callers; the swing backtester
+    passes include_dp=True so net P&L reflects the true after-cost outcome.
     """
     if entry <= 0 or exit_price <= 0 or qty <= 0:
         return 0.0
@@ -44,6 +54,8 @@ def compute_charges(entry: float, exit_price: float, qty: int) -> float:
     gst = (_BROKERAGE + exchange_txn + sebi) * _GST_PCT
 
     total = _BROKERAGE + stt + exchange_txn + sebi + stamp + gst
+    if include_dp:
+        total += _DP_CHARGE
     return round(total, 2)
 
 
