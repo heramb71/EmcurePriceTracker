@@ -17,13 +17,20 @@ def test_confidence_in_range():
     assert 0 <= conf <= 100
 
 
-def test_regime_alignment_raises_confidence():
+def test_momentum_regime_alignment_favours_bull():
+    # A momentum (breakout) setup: TRENDING_BULL beats SIDEWAYS (half credit).
+    f = make_features(price=1420.0, prev_high=1408.0, vwap=1402.0,
+                      atr_expansion=1.5, atr=20.0, rsi=60.0, rvol=2.0)
+    hit = signals.detect_atr_breakout(f, TRENDING_BULL)
+    assert scoring.confidence(f, hit, TRENDING_BULL) > scoring.confidence(f, hit, SIDEWAYS)
+
+
+def test_reversion_gets_full_credit_in_sideways():
+    # Reversion's edge lives in flat markets — SIDEWAYS must not be penalised.
     f = make_features(price=1400.0, sma7=1440.0, gap_to_sma7=-40.0,
                       vwap=1430.0, rsi=32.0, rvol=2.0, atr=20.0)
     hit = _sma7_hit(f)
-    bull = scoring.confidence(f, hit, TRENDING_BULL)
-    side = scoring.confidence(f, hit, SIDEWAYS)
-    assert bull > side  # TRENDING_BULL adds the full regime weight
+    assert scoring.confidence(f, hit, SIDEWAYS) == scoring.confidence(f, hit, TRENDING_BULL)
 
 
 def test_reversion_rewards_lower_rsi():

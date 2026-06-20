@@ -12,7 +12,7 @@ the reverse), so those sub-scores are oriented by signal family. Anchored on
 from __future__ import annotations
 
 from src.radar.features import StockFeatures
-from src.radar.regime import SIDEWAYS, TRENDING_BEAR, TRENDING_BULL
+from src.radar.regime import SIDEWAYS, TRENDING_BULL
 from src.radar.signals import (
     ATR_BREAKOUT,
     GAP_REVERSION,
@@ -44,12 +44,20 @@ def _clip01(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 
-def _regime_alignment(regime: str) -> float:
+def _regime_alignment(regime: str, is_reversion: bool) -> float:
+    """Regime-fit multiplier, oriented by signal family.
+
+    Momentum setups want a trending-up tape (half credit when range-bound).
+    Mean-reversion setups work *best* in a range and are also fine buying dips in
+    an uptrend, so they get full credit in both SIDEWAYS and TRENDING_BULL — the
+    earlier flat-credit version suppressed reversion exactly where its edge lives.
+    TRENDING_BEAR scores zero (long setups are filtered upstream anyway).
+    """
     if regime == TRENDING_BULL:
         return 1.0
     if regime == SIDEWAYS:
-        return 0.5
-    return 0.0  # TRENDING_BEAR (long setups are filtered upstream anyway)
+        return 1.0 if is_reversion else 0.5
+    return 0.0
 
 
 def confidence(f: StockFeatures, signal: SignalHit, regime: str) -> int:
@@ -71,7 +79,7 @@ def confidence(f: StockFeatures, signal: SignalHit, regime: str) -> int:
 
     atr_s = _clip01((f.atr_expansion - 1.0) / 0.5) * W_ATR
     rs_s = _clip01(f.rs20 / 0.05) * W_RS
-    regime_s = _regime_alignment(regime) * W_REGIME
+    regime_s = _regime_alignment(regime, is_reversion) * W_REGIME
 
     total = rvol_s + sma7_s + vwap_s + atr_s + rsi_s + rs_s + regime_s
     return int(round(max(0.0, min(100.0, total))))
