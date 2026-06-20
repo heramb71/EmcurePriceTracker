@@ -186,6 +186,56 @@ sudo systemctl restart emcure-bot emcure-tracker
 
 ---
 
+## NSE Trade Opportunity Radar (`src/radar/`, `radar_headless.py`, `radar.py`)
+
+A **separate, read-only** multi-stock scanner — fully isolated from the live
+EMCURE trading engine and the crypto service. It scans a 6-stock universe
+(EMCURE, ICICIBANK, IREDA, IRFC, HUDCO, SUZLON), detects 5 signal types, scores
+0–100, sends **Telegram alerts for manual review only**, and tracks every
+signal's forward outcome to measure edge. **It never places trades.**
+
+> Reality check: this exact universe failed the automation backtest
+> (`swing_gate.py`: ~1.05 PF / ~0.7% CAGR; SMA7 reversion only generalizes to
+> EMCURE+ICICIBANK). The radar is a *hypothesis validator*, not a recommender —
+> alerts carry a mandatory "manual review / no auto-execution" footer and the
+> success metric is forward expectancy, not alert count.
+
+**Modules:**
+- `universe.py` — 6 symbols + ADTV ≥ ₹100 Cr liquidity gate
+- `features.py` — scalar per-stock snapshot (reuses `src/data.py` + `src/indicators.py`)
+- `regime.py` — NIFTY regime: 50-DMA slope + ADX(14) + universe breadth → TRENDING_BULL/BEAR/SIDEWAYS
+- `signals.py` — 5 detectors: SMA7 reversion, VWAP pullback, RVOL reversal, ATR breakout, gap reversion
+- `scoring.py` — 0–100 confidence (RVOL/SMA7/VWAP/ATR/RSI/RS/regime), `SCORE_GATE=75`
+- `scan.py` — pure pipeline → ranked, scored hits
+- `dispatch.py` — cooldown + daily budget + digest batching (anti-flood)
+- `alert_format.py` — the 🚨 TRADE OPPORTUNITY message + digest
+- `store.py` — SQLite (`radar.db`, gitignored): `signals` + `outcomes` tables
+- `tracker.py` — evaluate matured outcomes at 1h/4h/1d/3d/5d/10d → MFE/MAE, WIN/LOSS/NEUTRAL
+- `analytics.py` — win-rate / profit factor / expectancy by stock·signal·regime; leaders by expectancy
+
+**Persistence:** one SQLite file (`radar.db`), stdlib `sqlite3`, WAL mode — no
+server, OCI-free-tier friendly. The radar is the sole writer.
+
+**Run:**
+```bash
+python radar.py scan-now      # one scan, ranked table (no alerts/writes)
+python radar.py outcomes      # force a matured-outcome sweep
+python radar.py report        # analytics dashboard
+python radar_headless.py      # the service (market-aware loop)
+```
+
+**Deploy (separate service, leaves emcure-tracker/emcure-bot untouched):**
+```bash
+sudo cp /opt/emcure/deploy/radar.service /etc/systemd/system/emcure-radar.service
+sudo systemctl daemon-reload && sudo systemctl enable --now emcure-radar
+tail -f /var/log/emcure/radar.log
+```
+
+Config lives under the `RADAR_*` keys in `.env` (see `.env.example`). Telegram
+only — reuses `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID`.
+
+---
+
 ## src/trade_manager.py
 
 Manual trade state persistence for T1/T2/T3/SL alert monitoring.

@@ -33,6 +33,9 @@ htmlcov/
 # Runtime state
 strategy_state.json
 trade_state.json
+radar.db
+radar.db-wal
+radar.db-shm
 
 # SSH keys
 *.pem
