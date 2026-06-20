@@ -20,10 +20,9 @@ from dotenv import load_dotenv
 
 from src.alerts import send_alert
 from src.holidays import is_market_holiday
-from src.radar import analytics, scan, store, tracker
+from src.radar import analytics, scan, scoring, store, tracker
 from src.radar.alert_format import format_digest, format_opportunity
 from src.radar.dispatch import AlertGate
-from src.radar.scoring import SCORE_GATE
 
 load_dotenv()
 
@@ -74,10 +73,6 @@ def _retry_send(send_fn, *args) -> bool:
 
 
 # ── config ──────────────────────────────────────────────────────────────────
-def _gate() -> int:
-    return int(os.getenv("RADAR_SCORE_GATE", str(SCORE_GATE)))
-
-
 def _refresh_seconds() -> int:
     return int(os.getenv("RADAR_REFRESH_SECONDS", "300"))
 
@@ -92,11 +87,11 @@ def run_cycle(
     digest_minutes: int,
 ) -> None:
     result = scan.run_scan()
-    gate = _gate()
-    gated = [r for r in result.ranked if r[1] > gate]
+    gated = result.above_gate()  # per-family gate (momentum vs reversion)
     logger.info(
-        "Scan: regime=%s breadth=%.2f hits=%d above_gate(%d)=%d illiquid=%s",
-        result.regime, result.breadth, len(result.ranked), gate, len(gated),
+        "Scan: regime=%s breadth=%.2f hits=%d above_gate(mom=%d/rev=%d)=%d illiquid=%s",
+        result.regime, result.breadth, len(result.ranked),
+        scoring.momentum_gate(), scoring.reversion_gate(), len(gated),
         ",".join(result.illiquid) or "-",
     )
 
@@ -142,7 +137,8 @@ def main() -> None:
     digest_minutes = int(os.getenv("RADAR_DIGEST_MINUTES", "60"))
     last_digest: list[datetime] = []
 
-    logger.info("Radar started. gate=%d refresh=%ds", _gate(), _refresh_seconds())
+    logger.info("Radar started. gates(mom=%d/rev=%d) refresh=%ds",
+                scoring.momentum_gate(), scoring.reversion_gate(), _refresh_seconds())
 
     while True:
         try:

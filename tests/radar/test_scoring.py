@@ -40,6 +40,21 @@ def test_reversion_rewards_lower_rsi():
         scoring.confidence(shallow, _sma7_hit(shallow), TRENDING_BULL)
 
 
+def test_reversion_gate_is_lower_than_momentum_gate():
+    # A confidence of 60 clears the reversion gate (55) but not momentum's (75).
+    assert scoring.passes_gate(signals.SMA7_REVERSION, 60) is True
+    assert scoring.passes_gate(signals.ATR_BREAKOUT, 60) is False
+    assert scoring.passes_gate(signals.ATR_BREAKOUT, 80) is True
+
+
+def test_deep_reversion_outscores_shallow_dip():
+    # Depth below SMA7 is the dominant reversion factor.
+    deep = make_features(price=1400.0, sma7=1440.0, gap_to_sma7=-40.0, rsi=45.0, atr=20.0)
+    shallow = make_features(price=1400.0, sma7=1423.0, gap_to_sma7=-23.0, rsi=45.0, atr=20.0)
+    assert scoring.confidence(deep, _sma7_hit(deep), SIDEWAYS) > \
+        scoring.confidence(shallow, _sma7_hit(shallow), SIDEWAYS)
+
+
 def test_rank_orders_high_to_low_with_rank_index():
     f = make_features()
     a = signals.SignalHit("A", signals.SMA7_REVERSION, (), (1, 1), 0.9, 1.2, 1.0)

@@ -46,6 +46,21 @@ def test_run_scan_ranks_and_gates_liquidity():
     assert result.ranked  # at least one EMCURE signal scored
 
 
+def test_core_symbol_bypasses_liquidity_gate(monkeypatch):
+    # EMCURE is illiquid (₹5 Cr) but in the core watchlist → still scanned.
+    monkeypatch.setenv("RADAR_CORE_SYMBOLS", "EMCURE")
+    monkeypatch.setenv("RADAR_MIN_ADTV_CR", "100")
+    snaps = {"EMCURE": make_features(stock="EMCURE", price=1400.0, sma7=1440.0,
+                                     gap_to_sma7=-40.0, rsi=30.0, atr=20.0,
+                                     adtv_cr=5.0, above_50dma=True)}
+    result = scan.run_scan(
+        nifty_daily=_bull_nifty(), symbols=("EMCURE",),
+        snapshot_fn=lambda s, n: snaps.get(s),
+    )
+    assert "EMCURE" not in result.illiquid
+    assert result.ranked  # signals still scored despite low ADTV
+
+
 def test_above_gate_filters_low_confidence():
     snaps = {"EMCURE": make_features(stock="EMCURE", price=1400.0, sma7=1405.0,
                                      gap_to_sma7=-5.0, adtv_cr=500.0)}

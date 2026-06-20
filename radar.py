@@ -11,9 +11,8 @@ import sys
 
 from dotenv import load_dotenv
 
-from src.radar import analytics, scan, store, tracker
+from src.radar import analytics, scan, scoring, store, tracker
 from src.radar.alert_format import signal_label
-from src.radar.scoring import SCORE_GATE
 
 load_dotenv()
 
@@ -30,7 +29,7 @@ def cmd_scan_now() -> None:
           f"{'STOP':>8} {'TARGET':>8} {'RR':>4}  GATE")
     for hit, conf, rank in result.ranked:
         price = result.snapshots[hit.stock].price
-        flag = "✓" if conf > SCORE_GATE else " "
+        flag = "✓" if scoring.passes_gate(hit.signal_type, conf) else " "
         print(f"{rank:>2}  {hit.stock:<10} {signal_label(hit.signal_type):<26} "
               f"{conf:>4} {price:>9.2f} {hit.stop:>8.2f} {hit.target:>8.2f} "
               f"{hit.rr:>4.1f}   {flag}")

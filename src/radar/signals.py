@@ -10,6 +10,7 @@ Stop/target/RR are computed per signal so an alert is self-contained. Long-only
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -31,6 +32,28 @@ _ATR_EXPANSION_MIN = 1.3
 _GAP_DOWN_MIN_PCT = -2.0      # open ≥2% below prev close
 _STOP_ATR_MULT = 1.5
 _TARGET_ATR_MULT = 3.0
+
+
+def _rev_stop_atr() -> float:
+    return float(os.environ.get("RADAR_REVERSION_STOP_ATR", "0.8"))
+
+
+def _min_rr() -> float:
+    return float(os.environ.get("RADAR_MIN_RR", "1.0"))
+
+
+def _reversion_stop(entry: float, target: float, atr: float) -> float:
+    """Stop for a close-target reversion trade.
+
+    The stop distance is capped so the trade clears a minimum RR toward its
+    (nearby) mean target — the old 1.5×ATR stop made RR ≈ 0.3 when the SMA7 was
+    only ~1.5% away. Distance = min(REVERSION_STOP_ATR×ATR, reward / MIN_RR).
+    """
+    reward = target - entry
+    by_atr = _rev_stop_atr() * atr if atr > 0 else entry * 0.02
+    by_rr = reward / _min_rr() if _min_rr() > 0 else by_atr
+    dist = min(by_atr, by_rr) if by_rr > 0 else by_atr
+    return entry - dist
 
 
 @dataclass(frozen=True)
@@ -82,7 +105,7 @@ def detect_sma7_reversion(f: StockFeatures, regime: str) -> Optional[SignalHit]:
         return None
     entry = f.price
     target = f.sma7                       # mean-revert back to SMA7
-    stop = entry - _STOP_ATR_MULT * f.atr if f.atr > 0 else entry * 0.97
+    stop = _reversion_stop(entry, target, f.atr)
     return _hit(
         f, SMA7_REVERSION,
         [f"Price {abs(gap_frac)*100:.1f}% below SMA7 (₹{f.sma7})",
@@ -151,7 +174,7 @@ def detect_gap_reversion(f: StockFeatures, regime: str) -> Optional[SignalHit]:
         return None
     entry = f.price
     target = f.prev_close                  # fill the gap
-    stop = min(f.open, entry - _STOP_ATR_MULT * f.atr) if f.atr > 0 else f.open * 0.99
+    stop = _reversion_stop(entry, target, f.atr)
     return _hit(
         f, GAP_REVERSION,
         [f"Gapped {f.gap_pct}% down", "Reclaimed the open",

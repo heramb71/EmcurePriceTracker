@@ -18,6 +18,14 @@ def test_sma7_reversion_fires_when_stretched_below():
     assert hit.rr > 0
 
 
+def test_sma7_reversion_stop_respects_rr_floor():
+    # Wide ATR would give RR≈0.3 with the old stop; the RR floor keeps RR≥1.
+    f = make_features(price=1400.0, sma7=1427.0, gap_to_sma7=-27.0, atr=60.0)
+    hit = signals.detect_sma7_reversion(f, TRENDING_BULL)
+    assert hit is not None
+    assert hit.rr >= 1.0
+
+
 def test_sma7_reversion_silent_when_near_mean():
     f = make_features(price=1400.0, sma7=1405.0, gap_to_sma7=-5.0)
     assert signals.detect_sma7_reversion(f, TRENDING_BULL) is None

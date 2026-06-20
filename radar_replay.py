@@ -12,7 +12,6 @@ Not wired into the service; a manual review tool. Run:
 """
 from __future__ import annotations
 
-import os
 import sys
 from datetime import datetime
 
@@ -23,6 +22,7 @@ from src.indicators import compute_atr, compute_avg_volume, compute_ema, compute
 from src.intraday import compute_sma7
 from src.radar import scoring, signals, tracker
 from src.radar.alert_format import signal_label
+from src.radar.scan import _core_symbols
 from src.radar.features import StockFeatures, _avg_atr, _return, fetch_index_daily
 from src.radar.regime import breadth, current_regime
 from src.radar.universe import NIFTY, SYMBOLS, adtv_cr
@@ -31,9 +31,8 @@ INTERVAL = "60m"
 INTRADAY_DAYS = 30
 BARS_PER_DAY = 7  # 09:15..15:15 hourly
 
-# Confidence gate — honours RADAR_SCORE_GATE so an aggressive profile (e.g. 65)
-# can be replayed exactly as the service would apply it.
-GATE = int(os.environ.get("RADAR_SCORE_GATE", scoring.SCORE_GATE))
+# Gating is per-family via scoring.passes_gate, honouring RADAR_SCORE_GATE
+# (momentum) and RADAR_REVERSION_GATE so any profile replays as the service runs.
 
 
 def _intraday(sym: str) -> pd.DataFrame | None:
@@ -118,6 +117,7 @@ def main() -> None:
     daily = {s: fetch_daily(s, days=160) for s in SYMBOLS}
     intra = {s: _intraday(s) for s in SYMBOLS}
     nifty_daily = fetch_index_daily(NIFTY, days=160)
+    core = _core_symbols()
 
     # Test window = last `num_days` trading dates present in the intraday data.
     any_intra = next(d for d in intra.values() if d is not None)
@@ -153,7 +153,9 @@ def main() -> None:
                 ts = b["dt"].iloc[h]
                 ts_label = ts.strftime("%H:%M")
                 snap = snapshot_at(s, daily[s], b, day, h, nifty_slice)
-                if snap is None or snap.adtv_cr < min_adtv:
+                if snap is None:
+                    continue
+                if s.upper() not in core and snap.adtv_cr < min_adtv:
                     continue
                 for hit in signals.detect(snap, regime):
                     conf = scoring.confidence(snap, hit, regime)
@@ -162,11 +164,12 @@ def main() -> None:
                 hour_hits.sort(key=lambda x: x[2], reverse=True)
                 print(f"  {ts_label}")
                 for snap, hit, conf, ts in hour_hits:
-                    gate = "ALERT" if conf > GATE else "     "
-                    print(f"    [{gate}] {snap.stock:<9} {signal_label(hit.signal_type):<26} "
+                    alerted = scoring.passes_gate(hit.signal_type, conf)
+                    flag = "ALERT" if alerted else "     "
+                    print(f"    [{flag}] {snap.stock:<9} {signal_label(hit.signal_type):<26} "
                           f"conf={conf:>3} px=₹{snap.price:<8.1f} "
                           f"SL ₹{hit.stop:.1f} / T ₹{hit.target:.1f} RR {hit.rr:.1f}")
-                    if conf > GATE:
+                    if alerted:
                         fwd = _forward_bars(intra[snap.stock], ts)
                         price, mfe, mae, outcome = tracker.evaluate_window(
                             snap.price, hit.stop, hit.target, fwd)

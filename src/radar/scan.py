@@ -27,6 +27,17 @@ def _min_adtv_cr() -> float:
     smaller PSU names, so a lower floor is usually wanted for this universe."""
     return float(os.environ.get("RADAR_MIN_ADTV_CR", MIN_AVG_TRADED_VALUE_CR))
 
+
+def _core_symbols() -> set[str]:
+    """Names that bypass the ADTV gate (``RADAR_CORE_SYMBOLS``, default EMCURE).
+
+    Lets the discovery floor stay high for thematic names while never silencing
+    the home stock, whose own ADTV sits below any sensible floor and dips lowest
+    on the very days it moves."""
+    raw = os.environ.get("RADAR_CORE_SYMBOLS", "EMCURE")
+    return {s.strip().upper() for s in raw.split(",") if s.strip()}
+
+
 SnapshotFn = Callable[[str, Optional[pd.DataFrame]], Optional[StockFeatures]]
 
 
@@ -40,7 +51,7 @@ class ScanResult:
     illiquid: tuple[str, ...] = ()
 
     def above_gate(self) -> list[tuple[signals.SignalHit, int, int]]:
-        return [r for r in self.ranked if r[1] > scoring.SCORE_GATE]
+        return [r for r in self.ranked if scoring.passes_gate(r[0].signal_type, r[1])]
 
 
 def run_scan(
@@ -62,11 +73,12 @@ def run_scan(
     regime = current_regime(nifty_daily, breadth_pct) if nifty_daily is not None else SIDEWAYS
 
     min_adtv = _min_adtv_cr()
+    core = _core_symbols()
     scored: list[tuple[signals.SignalHit, int]] = []
     illiquid: list[str] = []
     for sym, snap in snapshots.items():
-        # Liquidity gate uses ADTV already on the snapshot.
-        if snap.adtv_cr < min_adtv:
+        # Liquidity gate uses ADTV already on the snapshot; core names bypass it.
+        if sym.upper() not in core and snap.adtv_cr < min_adtv:
             illiquid.append(sym)
             continue
         for hit in signals.detect(snap, regime):
