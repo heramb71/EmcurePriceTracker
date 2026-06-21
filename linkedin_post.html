@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0d0d0d;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 0;
+    font-family: -apple-system, 'Segoe UI', sans-serif;
+  }
+
+  .canvas {
+    width: 1200px;
+    height: 628px;
+    background: linear-gradient(160deg, #0f1923 0%, #0d1b2a 60%, #111827 100%);
+    padding: 44px 60px 36px;
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .canvas::before {
+    content: '';
+    position: absolute;
+    top: -200px; right: -200px;
+    width: 600px; height: 600px;
+    background: radial-gradient(circle, rgba(37,211,102,0.07) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .canvas::after {
+    content: '';
+    position: absolute;
+    bottom: -100px; left: -100px;
+    width: 500px; height: 500px;
+    background: radial-gradient(circle, rgba(0,150,255,0.05) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  /* ── Top row: headline + two phone cards ── */
+  .top {
+    display: grid;
+    grid-template-columns: 320px 1fr 1fr;
+    gap: 20px;
+    flex: 1;
+    min-height: 0;
+    margin-bottom: 18px;
+  }
+
+  /* ── Left: headline block ── */
+  .headline-block {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+  .headline-block .tag {
+    font-size: 10px;
+    font-weight: 700;
+    color: #25d366;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+  .headline {
+    font-size: 32px;
+    font-weight: 900;
+    color: #f0f4f8;
+    line-height: 1.15;
+    letter-spacing: -0.5px;
+    margin-bottom: 12px;
+  }
+  .headline span { color: #25d366; }
+  .subline {
+    font-size: 11.5px;
+    color: #718096;
+    line-height: 1.6;
+    margin-bottom: 18px;
+  }
+  .stats-mini {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .stat-mini {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 10px;
+    padding: 8px 12px;
+    text-align: center;
+  }
+  .stat-mini-num {
+    font-size: 20px;
+    font-weight: 900;
+    color: #25d366;
+    line-height: 1;
+  }
+  .stat-mini-label {
+    font-size: 9px;
+    color: #4a5568;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-top: 2px;
+  }
+
+  /* ── Phone card ── */
+  .phone-card {
+    background: #111b21;
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid rgba(255,255,255,0.07);
+    box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .phone-bar {
+    background: #202c33;
+    padding: 9px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    flex-shrink: 0;
+  }
+  .avatar {
+    width: 26px; height: 26px;
+    background: #25d366;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px;
+  }
+  .contact-name { font-size: 11px; font-weight: 700; color: #e9edef; }
+  .contact-sub  { font-size: 9px;  color: #8696a0; }
+  .status-dot { width: 6px; height: 6px; background: #25d366; border-radius: 50%; margin-left: auto; }
+
+  .chat-area {
+    padding: 10px;
+    background: #0b141a;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .time-stamp {
+    text-align: center;
+    font-size: 8.5px;
+    color: #8696a0;
+    background: rgba(17,27,33,0.7);
+    display: block;
+    width: fit-content;
+    padding: 2px 8px;
+    border-radius: 6px;
+    margin: 0 auto 8px;
+  }
+
+  .bubble {
+    background: #202c33;
+    border-radius: 8px 8px 8px 2px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    max-width: 96%;
+  }
+  .bubble-time { font-size: 8px; color: #8696a0; text-align: right; margin-top: 4px; }
+  .bubble-title { font-size: 10.5px; font-weight: 800; color: #e9edef; margin-bottom: 6px; line-height: 1.3; }
+  .bubble-row {
+    display: flex; justify-content: space-between;
+    font-size: 9.5px; color: #aebac2; padding: 1.5px 0; line-height: 1.5;
+  }
+  .bubble-row .val   { color: #e9edef; }
+  .bubble-row .green { color: #25d366; font-weight: 700; }
+  .bubble-row .red   { color: #f15c6d; font-weight: 700; }
+
+  .divider { border: none; border-top: 1px solid rgba(255,255,255,0.08); margin: 6px 0; }
+
+  .section-label { font-size: 8.5px; font-weight: 800; color: #25d366; text-transform: uppercase; letter-spacing: 0.07em; margin: 5px 0 3px; }
+
+  .conf-bar-wrap { margin: 4px 0; }
+  .conf-label { display: flex; justify-content: space-between; font-size: 8.5px; color: #8696a0; margin-bottom: 2px; }
+  .bar-bg { background: #2a3942; border-radius: 3px; height: 4px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, #25d366, #128c7e); }
+  .bar-fill.amber { background: linear-gradient(90deg, #f59e0b, #d97706); }
+  .bar-fill.red   { background: linear-gradient(90deg, #f15c6d, #c0392b); }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: rgba(37,211,102,0.12);
+    border: 1px solid rgba(37,211,102,0.3);
+    border-radius: 16px; padding: 3px 9px;
+    font-size: 9px; font-weight: 800; color: #25d366; margin: 5px 0 3px;
+  }
+
+  .bubble-sent {
+    background: #005c4b; border-radius: 8px 8px 2px 8px;
+    padding: 5px 10px; margin: 4px 0 4px auto;
+    max-width: 60%; font-size: 10px; color: #e9edef; font-weight: 600;
+  }
+
+  .bubble-success {
+    background: #202c33; border-radius: 8px 8px 8px 2px;
+    border-left: 3px solid #25d366; padding: 8px 10px; margin-bottom: 6px; max-width: 96%;
+  }
+
+  .pnl-big { font-size: 26px; font-weight: 900; color: #25d366; margin: 4px 0 2px; line-height: 1; }
+  .pnl-detail { font-size: 8.5px; color: #8696a0; line-height: 1.6; }
+  .pnl-detail span { color: #e9edef; }
+
+  /* ── Footer ── */
+  .footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 14px;
+    border-top: 1px solid rgba(255,255,255,0.07);
+    flex-shrink: 0;
+  }
+  .footer-left { font-size: 10px; color: #4a5568; line-height: 1.65; }
+  .footer-left strong { color: #718096; }
+  .footer-tag { font-size: 10px; color: #2d3748; text-align: right; line-height: 1.8; }
+  .footer-tag span { color: #25d366; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="canvas">
+
+  <div class="top">
+
+    <!-- Left: headline + stats -->
+    <div class="headline-block">
+      <div class="tag">📱 Personal Trading Bot</div>
+      <h2 class="headline">My phone tells<br>me when to<br><span>trade.</span></h2>
+      <p class="subline">Automated WhatsApp alerts — pre-open briefing, entry signals, P&amp;L tracking. No charts.</p>
+      <div class="stats-mini">
+        <div class="stat-mini"><div class="stat-mini-num">9AM</div><div class="stat-mini-label">Daily brief</div></div>
+        <div class="stat-mini"><div class="stat-mini-num">80%</div><div class="stat-mini-label">Confidence</div></div>
+        <div class="stat-mini"><div class="stat-mini-num">₹0</div><div class="stat-mini-label">Server cost</div></div>
+        <div class="stat-mini"><div class="stat-mini-num">+₹2k</div><div class="stat-mini-label">Today's P&amp;L</div></div>
+      </div>
+    </div>
+
+    <!-- Middle: Pre-open briefing -->
+    <div class="phone-card">
+      <div class="phone-bar">
+        <div class="avatar">🤖</div>
+        <div><div class="contact-name">Trade Bot</div><div class="contact-sub">9:08 AM · Today</div></div>
+        <div class="status-dot"></div>
+      </div>
+      <div class="chat-area">
+        <span class="time-stamp">09:08</span>
+        <div class="bubble">
+          <div class="bubble-title">📊 EMCURE.NS — Pre-Open Briefing<br><span style="font-size:8px;color:#8696a0;font-weight:400;">Wed 27 May 2026 · Opens 9:15 AM</span></div>
+          <hr class="divider">
+          <div class="bubble-row"><span>Close</span><span class="val">₹1,698.50</span></div>
+          <div class="bubble-row"><span>SMA7</span><span class="val">₹1,720.66 <span class="red">(gap −₹22)</span></span></div>
+          <div class="bubble-row"><span>ATR</span><span class="val">₹45 · News 🟡 Neutral</span></div>
+          <hr class="divider">
+          <div class="section-label">🎯 Entry Zones</div>
+          <div class="bubble-row"><span>BUY</span><span class="green">≤ ₹1,700.66</span></div>
+          <div class="bubble-row"><span>STRONG BUY</span><span class="green">≤ ₹1,695.66</span></div>
+          <hr class="divider">
+          <div class="badge">🟢 Confidence 80/100 — A — HIGH</div>
+          <div class="conf-bar-wrap">
+            <div class="conf-label"><span>T1 +₹10</span><span>80%</span></div>
+            <div class="bar-bg"><div class="bar-fill" style="width:80%"></div></div>
+          </div>
+          <div class="conf-bar-wrap">
+            <div class="conf-label"><span>T2 +₹20</span><span>58%</span></div>
+            <div class="bar-bg"><div class="bar-fill amber" style="width:58%"></div></div>
+          </div>
+          <div class="conf-bar-wrap">
+            <div class="conf-label"><span>T3 +₹25</span><span>52%</span></div>
+            <div class="bar-bg"><div class="bar-fill amber" style="width:52%"></div></div>
+          </div>
+          <div class="conf-bar-wrap">
+            <div class="conf-label"><span>Stop</span><span>20%</span></div>
+            <div class="bar-bg"><div class="bar-fill red" style="width:20%"></div></div>
+          </div>
+          <hr class="divider">
+          <div class="bubble-row"><span style="color:#ffd700;font-weight:800;">Rec: T3 (₹25)</span><span class="val">EV ₹+67</span></div>
+          <div class="bubble-time">09:08 ✓✓</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: Trade execution -->
+    <div class="phone-card">
+      <div class="phone-bar">
+        <div class="avatar">🤖</div>
+        <div><div class="contact-name">Trade Bot</div><div class="contact-sub">13:49 · Today</div></div>
+        <div class="status-dot"></div>
+      </div>
+      <div class="chat-area">
+        <span class="time-stamp">13:49</span>
+
+        <div class="bubble-sent">BUY 1693</div>
+
+        <div class="bubble-success">
+          <div class="bubble-title">✅ Trade recorded — EMCURE.NS</div>
+          <hr class="divider">
+          <div class="bubble-row"><span>Entry</span><span class="val">₹1,693.00 × 59 sh</span></div>
+          <div class="bubble-row"><span>SL</span><span class="red">₹1,616.73 (−₹76)</span></div>
+          <div class="bubble-row"><span>T1 / T2 / T3</span><span class="val">₹1,703 / ₹1,713 / ₹1,718</span></div>
+          <div style="font-size:8px;color:#8696a0;margin-top:5px;">Alerts fire automatically as each level is crossed.</div>
+          <div class="bubble-time">13:49 ✓✓</div>
+        </div>
+
+        <div class="bubble-sent">SELL 1723</div>
+
+        <div class="bubble-success" style="border-left-color:#ffd700;">
+          <div class="bubble-title">✅ Trade closed — EMCURE.NS</div>
+          <hr class="divider">
+          <div class="bubble-row"><span>Entry</span><span class="val">₹1,693.00</span></div>
+          <div class="bubble-row"><span>Exit</span><span class="green">₹1,727.90 (+34.90/sh)</span></div>
+          <div class="bubble-row"><span>Qty</span><span class="val">59 shares</span></div>
+          <hr class="divider">
+          <div class="pnl-big">₹+2,059</div>
+          <div class="pnl-detail">One trade · ~40 min · <span>All 3 targets hit ✓</span></div>
+          <div class="bubble-time">13:50 ✓✓</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="footer">
+    <div class="footer-left">
+      <strong>Built entirely through conversation with Claude Code.</strong><br>
+      Zero code written manually. Python · Flask · WhatsApp API · Oracle Cloud Free Tier
+    </div>
+    <div class="footer-tag">
+      <span>#PersonalProjects</span> #Automation &nbsp;
+      <span>#NSE</span> #AlgoTrading <span>#AI</span>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
