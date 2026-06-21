@@ -42,3 +42,9 @@ radar.db-shm
 emcurekey
 emcurekey.pub
 managed_state.json
+
+# Broker / API tokens (written at runtime — never commit)
+kite_token.json
+kite_token*.json
+*.token
+*token*.json
