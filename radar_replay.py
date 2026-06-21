@@ -35,8 +35,8 @@ BARS_PER_DAY = 7  # 09:15..15:15 hourly
 # (momentum) and RADAR_REVERSION_GATE so any profile replays as the service runs.
 
 
-def _intraday(sym: str) -> pd.DataFrame | None:
-    df = fetch_intraday(sym, INTERVAL, INTRADAY_DAYS)
+def _intraday(sym: str, days: int = INTRADAY_DAYS) -> pd.DataFrame | None:
+    df = fetch_intraday(sym, INTERVAL, days)
     if df is None or df.empty:
         return None
     df = df.copy()
