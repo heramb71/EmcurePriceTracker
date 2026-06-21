@@ -13,10 +13,10 @@ It runs headlessly on **Oracle Cloud Free Tier (Mumbai)**, sends scheduled Whats
 
 | Resource | Value |
 |----------|-------|
-| Server | Oracle Cloud VM — `152.67.11.24` (ap-mumbai-1, ARM A1.Flex) |
-| Webhook | `https://emcure-bot.duckdns.org/whatsapp` |
-| Health | `https://emcure-bot.duckdns.org/health` |
-| SSH | `ssh -i emcurekey ubuntu@152.67.11.24` |
+| Server | Oracle Cloud VM — `<SERVER_IP>` (ap-mumbai-1, ARM A1.Flex) |
+| Webhook | `https://<YOUR_DOMAIN>/whatsapp` |
+| Health | `https://<YOUR_DOMAIN>/health` |
+| SSH | `ssh -i emcurekey ubuntu@<SERVER_IP>` |
 
 **Services running on server:**
 - `emcure-bot` — WhatsApp Flask webhook (bot_server.py, port 5001)
@@ -148,7 +148,7 @@ python trade.py status
 
 ```bash
 # SSH into server
-ssh -i emcurekey ubuntu@152.67.11.24
+ssh -i emcurekey ubuntu@<SERVER_IP>
 
 # First-time setup (run once)
 curl -fsSL https://raw.githubusercontent.com/heramb71/EmcurePriceTracker/main/deploy/oracle_setup.sh -o setup.sh

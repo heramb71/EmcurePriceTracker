@@ -46,12 +46,12 @@ step "Free HTTPS domain (DuckDNS)"
 echo "  1. Go to https://www.duckdns.org and sign in (Google/GitHub)"
 echo "  2. Create a free subdomain, e.g.  emcure-bot"
 echo "  3. Set its IP to this server's public IP (shown below)"
-echo "  4. Copy the full domain: emcure-bot.duckdns.org"
+echo "  4. Copy the full domain: <YOUR_DOMAIN>"
 echo ""
 PUBLIC_IP=$(curl -s https://ifconfig.me 2>/dev/null || echo "unknown")
 echo "  Your public IP: ${PUBLIC_IP}"
 echo ""
-read -rp "DuckDNS domain (e.g. emcure-bot.duckdns.org): " DOMAIN
+read -rp "DuckDNS domain (e.g. <YOUR_DOMAIN>): " DOMAIN
 [[ -n "$DOMAIN" ]] || die "Domain is required for HTTPS"
 
 # ── 1. System packages ────────────────────────────────────────────────────────
