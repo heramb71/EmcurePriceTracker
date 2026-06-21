@@ -25,7 +25,7 @@ This creates `gh_deploy_key` (private) and `gh_deploy_key.pub` (public).
 ### 2. Put the PUBLIC key on the server
 
 ```bash
-ssh -i emcurekey ubuntu@152.67.11.24
+ssh -i emcurekey ubuntu@<SERVER_IP>
 echo "<contents of gh_deploy_key.pub>" >> ~/.ssh/authorized_keys
 chmod 600 ~/.ssh/authorized_keys
 ```
@@ -37,7 +37,7 @@ Repo → **Settings → Secrets and variables → Actions → New repository sec
 | Secret | Value |
 |--------|-------|
 | `SSH_PRIVATE_KEY` | full contents of `gh_deploy_key` (incl. BEGIN/END lines) |
-| `SSH_HOST` | `152.67.11.24` |
+| `SSH_HOST` | `<SERVER_IP>` |
 | `SSH_USER` | `ubuntu` |
 | `SSH_PORT` | `22` (optional; defaults to 22) |
 

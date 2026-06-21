@@ -17,7 +17,7 @@
 
 | Command | Usage |
 |---------|-------|
-| `ssh -i emcurekey ubuntu@152.67.11.24` | SSH into server |
+| `ssh -i emcurekey ubuntu@<SERVER_IP>` | SSH into server |
 | `sudo systemctl status emcure-bot` | Check bot service status |
 | `sudo systemctl status emcure-tracker` | Check alert engine status |
 | `sudo systemctl restart emcure-bot` | Restart bot after code change |
@@ -36,7 +36,7 @@
 | `git push origin main` | Push code changes to GitHub |
 | `cd /opt/emcure && sudo git pull` | Pull latest code on server |
 | `sudo systemctl restart emcure-bot emcure-tracker` | Apply code changes after pull |
-| `curl -s https://emcure-bot.duckdns.org/health` | Verify bot is live |
+| `curl -s https://<YOUR_DOMAIN>/health` | Verify bot is live |
 
 ---
 
@@ -63,7 +63,7 @@
 | `sudo nginx -t` | Test nginx config syntax |
 | `sudo systemctl reload nginx` | Reload nginx after config change |
 | `sudo certbot renew --dry-run` | Test SSL auto-renewal |
-| `dig +short emcure-bot.duckdns.org` | Check DNS resolution |
+| `dig +short <YOUR_DOMAIN>` | Check DNS resolution |
 
 ---
 
@@ -71,11 +71,11 @@
 
 | Item | Value |
 |------|-------|
-| IP | 152.67.11.24 |
+| IP | <SERVER_IP> |
 | Region | ap-mumbai-1 (Oracle Cloud) |
 | OS | Ubuntu 22.04 ARM |
-| Webhook | https://emcure-bot.duckdns.org/whatsapp |
-| Health | https://emcure-bot.duckdns.org/health |
+| Webhook | https://<YOUR_DOMAIN>/whatsapp |
+| Health | https://<YOUR_DOMAIN>/health |
 | App dir | /opt/emcure |
 | Logs | /var/log/emcure/ |
 | SSH key | emcurekey (in project root, gitignored) |
