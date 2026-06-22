@@ -265,6 +265,19 @@ def test_step_clears_position_when_broker_flat():
     assert broker.orders == []                          # nothing sold — we held 0
 
 
+def test_step_live_with_no_broker_places_nothing_and_keeps_position():
+    """Regression for the 09:05 pre-open phantom sell: a live SELL decision with
+    broker=None (the data-only pre-open _refresh) must NOT fabricate a fill,
+    emit an event, or clear the position."""
+    set_position(1733.10, 8, _cfg())
+    # day_high already past the top target → decide() would return 'sell'.
+    market = {"price": 1763.10, "day_high": 1776.0, "day_low": 1733.0, "atr": 35.0}
+    events = mc.step("EMCURE", market, broker=None, cfg=_cfg(live=True), now=_NOW)
+
+    assert events == []                 # no managed_sell announced
+    assert get_position() is not None   # position untouched — not phantom-cleared
+
+
 # ── Resting exchange stop-loss lifecycle (live only) ─────────────────────────
 
 class _StopBroker:

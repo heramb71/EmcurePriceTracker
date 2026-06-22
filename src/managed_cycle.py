@@ -390,6 +390,12 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
         return events
 
     # ── LIVE execution (Phase 2) ─────────────────────────────────────────────
+    # A live decision needs a broker to execute against. A None broker here means
+    # the call was data-only (e.g. the pre-open briefing's _refresh) — never
+    # fabricate a fill, emit a sell/buy event, or clear the position from it.
+    if broker is None:
+        logger.info("Managed-cycle: live decision '%s' skipped — no broker (data-only call)", decision.action)
+        return events
     if decision.action in ("sell", "exit_sl"):
         return events + _execute_sell(ticker, decision, broker, now)
     if decision.action == "reenter":

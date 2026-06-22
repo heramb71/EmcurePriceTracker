@@ -14,10 +14,12 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
 _IST = ZoneInfo("Asia/Kolkata")
+_MARKET_OPEN_T  = dtime(9, 15)
+_MARKET_CLOSE_T = dtime(15, 30)
 
 from dotenv import load_dotenv
 from rich.live import Live
@@ -115,6 +117,19 @@ from src.managed_cycle import ManagedConfig, step as managed_step, get_position 
 from src.probability import daily_reach_probs
 
 logger = logging.getLogger(__name__)
+
+
+def _is_market_open(now: datetime | None = None) -> bool:
+    """True only during the live NSE session (Mon–Fri, 9:15–15:30 IST, non-holiday).
+
+    Gates auto-trade execution so the managed cycle never acts on stale
+    prior-session data: _refresh() is also called from the pre-open briefing and
+    the post-close summary, where the day's high/low are last session's — enough
+    to fake a 'top target reached' exit before the open."""
+    now = now or datetime.now(_IST)
+    if now.weekday() >= 5 or is_market_holiday(now.date()):
+        return False
+    return _MARKET_OPEN_T <= now.time() <= _MARKET_CLOSE_T
 
 
 def _sizing_at_fill(sizing: dict, fill_price: float, filled_qty: int, atr: float) -> dict:
@@ -391,7 +406,14 @@ def _refresh(ticker: str, news_snapshot: dict | None = None, broker=None) -> dic
             "gap":      compute_sma7_gap(quote["price"], df_daily)["gap"],
             "trend_7d": classify_7d_trend(df_daily),
         }
-        events = managed_step(ticker, mc_market, broker, mc_cfg, df_daily=df_daily)
+        # Execute the cycle ONLY during live market hours. _refresh() is also
+        # called from the pre-open briefing and the post-close summary for data;
+        # running the step then would judge targets against last session's high
+        # (e.g. Friday's ₹1,776 high ≥ today's top target) and fire a phantom exit
+        # before the open. Outside hours we still compute managed_probs below for
+        # the briefing display, but place/announce nothing.
+        events = (managed_step(ticker, mc_market, broker, mc_cfg, df_daily=df_daily)
+                  if _is_market_open() else [])
         # strategy_state is left untouched (Supertrend disabled); the managed
         # cycle keeps its own managed_state.json.
         # Dynamic reach-odds (current price, 7/14/30-day moves) for the briefings —
