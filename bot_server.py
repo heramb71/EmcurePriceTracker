@@ -112,26 +112,61 @@ def _handle_status(parts: list[str]) -> str:
 
     lines = []
 
-    # ── Auto-trade position (Supertrend strategy) ─────────────────────────
-    auto_state = load_state()
-    auto_pos   = auto_state.get("position")
-    if auto_pos:
-        entry   = float(auto_pos["entry"])
-        qty     = int(auto_pos["qty_remaining"])
-        sl      = float(auto_pos["sl"])
-        t1      = float(auto_pos["t1"])
-        pnl     = round((price - entry) * qty, 0)
-        sign    = "+" if pnl >= 0 else ""
-        partial = " (partial booked ✅)" if auto_pos.get("partial_booked") else ""
-        lines += [
-            f"🤖 *Auto-Trade Position*{partial}",
-            f"Entry:   ₹{entry:,.2f} × {qty} shares",
-            f"Current: ₹{price:,.2f}",
-            f"P&L:     {sign}₹{pnl:,.0f}",
-            f"T1:      ₹{t1:,.2f}  ({t1 - price:+.0f})",
-            f"SL:      ₹{sl:,.2f}  ({sl - price:+.0f})",
-            "",
-        ]
+    managed_active = os.getenv("MANAGED_CYCLE", "false").lower() == "true"
+
+    if managed_active:
+        # ── Managed-cycle position ────────────────────────────────────────
+        # Under the managed cycle the Supertrend strategy is disabled and its
+        # strategy_state.json is never updated — reading it would surface a
+        # stale, already-sold position. Report the managed cycle's own state
+        # (its file is cleared atomically on every exit) so STATUS reflects the
+        # live session.
+        from src.managed_cycle import get_position as managed_position
+        pos = managed_position()
+        if pos:
+            entry   = float(pos["entry"])
+            qty     = int(pos["qty"])
+            sl      = float(pos["sl"])
+            targets = pos.get("targets") or []
+            pnl     = round((price - entry) * qty, 0)
+            sign    = "+" if pnl >= 0 else ""
+            lines += [
+                f"🎯 *Managed Position*",
+                f"Entry:   ₹{entry:,.2f} × {qty} shares",
+                f"Current: ₹{price:,.2f}",
+                f"P&L:     {sign}₹{pnl:,.0f}",
+            ]
+            for i, d in enumerate(targets):
+                lvl = round(entry + float(d), 2)
+                lines.append(f"T{i + 1}:      ₹{lvl:,.2f}  ({lvl - price:+.0f})")
+            lines += [f"SL:      ₹{sl:,.2f}  ({sl - price:+.0f})", ""]
+        else:
+            lines += [
+                f"🎯 *Managed cycle — flat*",
+                f"No open position — watching to re-enter on an SMA7 dip.",
+                "",
+            ]
+    else:
+        # ── Auto-trade position (Supertrend strategy) ─────────────────────
+        auto_state = load_state()
+        auto_pos   = auto_state.get("position")
+        if auto_pos:
+            entry   = float(auto_pos["entry"])
+            qty     = int(auto_pos["qty_remaining"])
+            sl      = float(auto_pos["sl"])
+            t1      = float(auto_pos["t1"])
+            pnl     = round((price - entry) * qty, 0)
+            sign    = "+" if pnl >= 0 else ""
+            partial = " (partial booked ✅)" if auto_pos.get("partial_booked") else ""
+            lines += [
+                f"🤖 *Auto-Trade Position*{partial}",
+                f"Entry:   ₹{entry:,.2f} × {qty} shares",
+                f"Current: ₹{price:,.2f}",
+                f"P&L:     {sign}₹{pnl:,.0f}",
+                f"T1:      ₹{t1:,.2f}  ({t1 - price:+.0f})",
+                f"SL:      ₹{sl:,.2f}  ({sl - price:+.0f})",
+                "",
+            ]
 
     # ── Manual trade position (BUY command) ───────────────────────────────
     trade = get_trade()
