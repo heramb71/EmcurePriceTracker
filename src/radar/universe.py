@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import pandas as pd
 
-# User-final universe (high-beta PSU / thematic / pharma).
+# User-final universe (high-beta PSU / thematic / pharma + 2026-06 watch adds).
+# All names below clear the strict ₹100 Cr ADTV gate (verified live 2026-06-23).
 SYMBOLS: tuple[str, ...] = (
     "EMCURE",
     "ICICIBANK",
@@ -17,6 +18,13 @@ SYMBOLS: tuple[str, ...] = (
     "IRFC",
     "HUDCO",
     "SUZLON",
+    # Added 2026-06-23 — watch-only, forward-tracked for edge before any belief.
+    "LAURUSLABS",   # Laurus Labs — pharma
+    "RRKABEL",      # RR Kabel — cables
+    "BHARATFORG",   # Bharat Forge — capital goods
+    "APARINDS",     # Apar Industries — capital goods
+    "KIRLOSENG",    # Kirloskar Oil Engines
+    "NETWEB",       # Netweb Technologies
 )
 
 NIFTY = "^NSEI"

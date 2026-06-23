@@ -189,8 +189,9 @@ sudo systemctl restart emcure-bot emcure-tracker
 ## NSE Trade Opportunity Radar (`src/radar/`, `radar_headless.py`, `radar.py`)
 
 A **separate, read-only** multi-stock scanner — fully isolated from the live
-EMCURE trading engine and the crypto service. It scans a 6-stock universe
-(EMCURE, ICICIBANK, IREDA, IRFC, HUDCO, SUZLON), detects 5 signal types, scores
+EMCURE trading engine and the crypto service. It scans a 12-stock universe
+(EMCURE, ICICIBANK, IREDA, IRFC, HUDCO, SUZLON + LAURUSLABS, RRKABEL, BHARATFORG,
+APARINDS, KIRLOSENG, NETWEB), detects 5 signal types, scores
 0–100, sends **Telegram alerts for manual review only**, and tracks every
 signal's forward outcome to measure edge. **It never places trades.**
 
@@ -201,7 +202,7 @@ signal's forward outcome to measure edge. **It never places trades.**
 > success metric is forward expectancy, not alert count.
 
 **Modules:**
-- `universe.py` — 6 symbols + ADTV ≥ ₹100 Cr liquidity gate
+- `universe.py` — 12 symbols + ADTV ≥ ₹100 Cr liquidity gate
 - `features.py` — scalar per-stock snapshot (reuses `src/data.py` + `src/indicators.py`)
 - `regime.py` — NIFTY regime: 50-DMA slope + ADX(14) + universe breadth → TRENDING_BULL/BEAR/SIDEWAYS
 - `signals.py` — 5 detectors: SMA7 reversion, VWAP pullback, RVOL reversal, ATR breakout, gap reversion
