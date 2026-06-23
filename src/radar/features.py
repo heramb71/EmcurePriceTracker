@@ -18,6 +18,7 @@ from src.indicators import (
     compute_atr,
     compute_avg_volume,
     compute_ema,
+    compute_macd,
     compute_rsi,
     compute_vwap,
 )
@@ -51,6 +52,10 @@ class StockFeatures:
     rs20: float                 # 20d return minus NIFTY 20d return (fraction)
     adtv_cr: float
     above_50dma: bool
+    # ── EOD-summary extras (defaulted so older construction sites stay valid) ──
+    day_high: float = 0.0       # today's daily high
+    day_low: float = 0.0        # today's daily low
+    macd_hist: float = 0.0      # MACD histogram (>0 = short-term trend up)
 
 
 def fetch_index_daily(symbol: str = "^NSEI", days: int = 120) -> Optional[pd.DataFrame]:
@@ -105,6 +110,9 @@ def build_snapshot(
         prev_close = float(close.iloc[-2])
         open_ = float(df["open"].iloc[-1])
         prev_high = float(df["high"].iloc[-2])
+        day_high = float(df["high"].iloc[-1])
+        day_low = float(df["low"].iloc[-1])
+        _, _, macd_hist = compute_macd(close)
 
         sma7 = compute_sma7(df)
         rsi = compute_rsi(close)
@@ -149,6 +157,9 @@ def build_snapshot(
             rs20=round(rs20, 4),
             adtv_cr=round(adtv_cr(df), 1),
             above_50dma=price > dma50,
+            day_high=round(day_high, 2),
+            day_low=round(day_low, 2),
+            macd_hist=macd_hist,
         )
     except Exception:
         logger.exception("build_snapshot failed for %s", ticker)

@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 from src.alerts import send_alert
 from src.holidays import is_market_holiday
 from src.radar import analytics, scan, scoring, store, tracker
-from src.radar.alert_format import format_digest, format_opportunity
+from src.radar.alert_format import format_digest, format_eod_stock, format_opportunity
 from src.radar.dispatch import AlertGate
 
 load_dotenv()
@@ -75,6 +75,36 @@ def _retry_send(send_fn, *args) -> bool:
 # ── config ──────────────────────────────────────────────────────────────────
 def _refresh_seconds() -> int:
     return int(os.getenv("RADAR_REFRESH_SECONDS", "300"))
+
+
+def _eod_enabled() -> bool:
+    return os.getenv("RADAR_EOD_SUMMARY", "true").lower() == "true"
+
+
+def _eod_exclude() -> set[str]:
+    """Symbols to skip in the EOD digest (default EMCURE — the main tracker
+    already sends its own managed end-of-day summary)."""
+    raw = os.getenv("RADAR_EOD_EXCLUDE", "EMCURE")
+    return {s.strip().upper() for s in raw.split(",") if s.strip()}
+
+
+def send_eod_summaries(tg_token: str, tg_chat: str, exclude: set[str]) -> int:
+    """Send one end-of-day summary per universe stock (excluding ``exclude``).
+
+    Runs a fresh scan so the daily bar is finalised, then fans each snapshot out
+    as a Telegram message. Returns the number of summaries sent."""
+    if not (tg_token and tg_chat):
+        return 0
+    result = scan.run_scan()
+    sent = 0
+    for sym, snap in result.snapshots.items():
+        if sym.upper() in exclude:
+            continue
+        if _retry_send(send_alert, tg_token, tg_chat,
+                       format_eod_stock(snap, result.regime)):
+            sent += 1
+            logger.info("EOD summary sent: %s", sym)
+    return sent
 
 
 # ── one scan + dispatch cycle ───────────────────────────────────────────────
@@ -137,8 +167,13 @@ def main() -> None:
     digest_minutes = int(os.getenv("RADAR_DIGEST_MINUTES", "60"))
     last_digest: list[datetime] = []
 
-    logger.info("Radar started. gates(mom=%d/rev=%d) refresh=%ds",
-                scoring.momentum_gate(), scoring.reversion_gate(), _refresh_seconds())
+    eod_enabled = _eod_enabled()
+    eod_exclude = _eod_exclude()
+    last_eod_date = None  # date of the last EOD dispatch (once per trading day)
+
+    logger.info("Radar started. gates(mom=%d/rev=%d) refresh=%ds eod=%s",
+                scoring.momentum_gate(), scoring.reversion_gate(),
+                _refresh_seconds(), eod_enabled)
 
     while True:
         try:
@@ -151,6 +186,17 @@ def main() -> None:
                 elapsed = time.monotonic() - start
                 time.sleep(max(1.0, _refresh_seconds() - elapsed))
             else:
+                # End-of-day per-stock summaries: once, after close, on a
+                # trading day (also fires on a restart that lands post-close).
+                now = _now_ist()
+                is_trading_day = now.weekday() < 5 and not is_market_holiday(now.date())
+                if (eod_enabled and is_trading_day
+                        and now.time() >= _MARKET_CLOSE
+                        and last_eod_date != now.date()):
+                    n_eod = send_eod_summaries(tg_token, tg_chat, eod_exclude)
+                    logger.info("EOD summaries dispatched: %d", n_eod)
+                    last_eod_date = now.date()
+
                 # Daily housekeeping: sweep matured outcomes, then sleep to open.
                 written = tracker.evaluate_due(conn)
                 if written:

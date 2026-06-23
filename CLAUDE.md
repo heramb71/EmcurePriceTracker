@@ -208,7 +208,7 @@ signal's forward outcome to measure edge. **It never places trades.**
 - `scoring.py` — 0–100 confidence (RVOL/SMA7/VWAP/ATR/RSI/RS/regime), `SCORE_GATE=75`
 - `scan.py` — pure pipeline → ranked, scored hits
 - `dispatch.py` — cooldown + daily budget + digest batching (anti-flood)
-- `alert_format.py` — the 🚨 TRADE OPPORTUNITY message + digest
+- `alert_format.py` — the 🚨 TRADE OPPORTUNITY message + digest + `format_eod_stock` (per-stock EOD summary)
 - `store.py` — SQLite (`radar.db`, gitignored): `signals` + `outcomes` tables
 - `tracker.py` — evaluate matured outcomes at 1h/4h/1d/3d/5d/10d → MFE/MAE, WIN/LOSS/NEUTRAL
 - `analytics.py` — win-rate / profit factor / expectancy by stock·signal·regime; leaders by expectancy
@@ -233,6 +233,15 @@ tail -f /var/log/emcure/radar.log
 
 Config lives under the `RADAR_*` keys in `.env` (see `.env.example`). Telegram
 only — reuses `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID`.
+
+**End-of-day summaries:** after market close on each trading day the radar sends
+one per-stock EOD summary (OHLC, RSI/MACD/regime, tomorrow's SMA7 reversion watch
+zone) in the EMCURE house style — `RADAR_EOD_SUMMARY=true` (default), excluding
+`RADAR_EOD_EXCLUDE` (default `EMCURE`, which has its own managed EOD from
+emcure-tracker). Watch zones are percentage-based (locked to the SMA7 signal's
+1.4% threshold) so they scale across the ₹70–₹1800 price range; the summary is
+watch-only and carries no tomorrow-probability claim (the reversion edge isn't
+validated outside EMCURE).
 
 ---
 
