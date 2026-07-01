@@ -53,10 +53,22 @@ def _pos(entry=1733.10, qty=8, sl=1633.10):
 # The held-position exit is now a mechanical touched-target FLOOR (no probability
 # gating). Ladder off entry 1733.10 → T1 1748.10, T2 1753.10, T3 1763.10.
 
-def test_decide_sell_when_top_target_reached():
-    market = {"price": 1762, "day_high": 1764, "day_low": 1740}      # high clears T3
+def test_decide_sell_when_top_target_reached_and_price_still_there():
+    # Current price is still at/above T3 — sell at current price.
+    market = {"price": 1764, "day_high": 1764, "day_low": 1740}
     d = decide(_pos(), market, _cfg())
-    assert d.action == "sell" and d.price == 1763.10 and d.qty == 8
+    assert d.action == "sell" and d.price == 1764 and d.qty == 8
+    assert "reached" in d.reason
+
+
+def test_decide_sell_when_top_touched_intraday_price_pulled_back():
+    # day_high cleared T3 (1763.10) but current price has fallen back below it.
+    # Should still sell (at current price), not claim "top target reached".
+    market = {"price": 1762, "day_high": 1764, "day_low": 1740}
+    d = decide(_pos(), market, _cfg())
+    assert d.action == "sell" and d.price == 1762 and d.qty == 8
+    assert "pulled back" in d.reason
+    assert "reached" not in d.reason
 
 
 def test_decide_exit_sl_takes_priority_over_target():
@@ -139,9 +151,24 @@ class _FakeBroker:
         return {"status": "COMPLETE", "fill_price": 0.0, "filled_qty": 0}
 
 
+def test_step_ignores_pre_entry_day_high():
+    """Regression: stock opened ~₹1850 (above top target), dipped ₹28, entry
+    at ₹1819.70. First cycle after fill must NOT immediately sell because
+    day_high from yfinance includes the pre-entry morning spike."""
+    set_position(1819.70, 8, _cfg(targets=(15.0, 20.0, 30.0), sl_rupees=100))
+    # price is barely off entry; day_high carries the morning high well above top target
+    market = {"price": 1819.80, "day_high": 1860.0, "day_low": 1810.0,
+              "atr": 35.0, "gap": -28, "trend_7d": "Upward"}
+    events = mc.step("EMCURE", market, None, _cfg(live=False))
+    kinds = [e[0] for e in events]
+    assert "managed_dryrun" not in kinds   # must NOT fire a sell
+
+
 def test_step_dryrun_adopts_holding_and_announces_no_orders():
     broker = _FakeBroker(held=8, avg=1733.10)
-    market = {"price": 1762, "day_high": 1764, "day_low": 1740, "atr": 35.0,
+    # price=1764 puts current price above T3 (1763.10) so the post-entry high
+    # alone triggers the sell — independent of any pre-entry session high.
+    market = {"price": 1764, "day_high": 1800, "day_low": 1740, "atr": 35.0,
               "gap": 0, "trend_7d": "Upward"}
     events = mc.step("EMCURE", market, broker, _cfg(live=False))
 
