@@ -133,7 +133,7 @@ def decide(position: Optional[dict], market: dict, cfg: ManagedConfig) -> Decisi
 
         # 1. Capital protection first — stop hit on the day's low or live price.
         if (low and low <= sl) or (price and price <= sl):
-            return Decision("exit_sl", reason=f"Stop ₹{sl:,.2f} hit", price=sl, qty=qty)
+            return Decision("exit_sl", reason=f"Hit the safety exit (₹{sl:,.2f})", price=sl, qty=qty)
 
         # 2. Touched-target floor. Once the day's high prints a rung it becomes a
         #    locked floor: ride above it toward the next rung, but never give a
@@ -150,28 +150,26 @@ def decide(position: Optional[dict], market: dict, cfg: ManagedConfig) -> Decisi
                 if price >= top:             # still at/above top — book it outright
                     return Decision(
                         "sell", price=price, qty=qty, label=f"+₹{fdelta:.0f}",
-                        reason=f"Top target ₹{floor:,.2f} (+₹{fdelta:.0f}) reached",
+                        reason=f"Reached the target — ₹{floor:,.2f}",
                     )
                 # Top rung was touched intraday (via day_high) but price has since
                 # pulled back below it — the 5-min cycle missed the peak. Sell now
                 # at current price rather than holding through further downside.
                 return Decision(
                     "sell", price=price, qty=qty, label=f"+₹{fdelta:.0f}",
-                    reason=(f"Top ₹{floor:,.2f} touched intraday, pulled back to "
-                            f"₹{price:,.2f} — selling to close"),
+                    reason=(f"Hit ₹{floor:,.2f} then pulled back to "
+                            f"₹{price:,.2f} — selling to lock it in"),
                 )
             if price <= floor:                       # pulled back to a touched rung
                 return Decision(
                     "sell", price=price, qty=qty, label=f"+₹{fdelta:.0f}",
-                    reason=(f"Pulled back to touched +₹{fdelta:.0f} floor — "
-                            f"booking ₹{price:,.2f}"),
+                    reason=f"Slipped back to ₹{floor:,.2f} — booking the ₹{fdelta:.0f} gain",
                 )
             nxt    = min(t for t in ladder if t > floor)   # above floor → ride up
             ndelta = nxt - entry
             return Decision(
                 "hold", price=nxt, qty=qty, label=f"+₹{ndelta:.0f}",
-                reason=(f"+₹{fdelta:.0f} floor locked; riding to +₹{ndelta:.0f} "
-                        f"(₹{nxt:,.2f})"),
+                reason=f"₹{floor:,.2f} locked in — holding for ₹{nxt:,.2f}",
             )
 
         # 3. No rung touched yet — hold for the first target.
@@ -179,7 +177,7 @@ def decide(position: Optional[dict], market: dict, cfg: ManagedConfig) -> Decisi
         fdelta = first - entry
         return Decision(
             "hold", price=first, qty=qty, label=f"+₹{fdelta:.0f}",
-            reason=f"Holding for first target +₹{fdelta:.0f} (₹{first:,.2f})",
+            reason=f"Holding for the first target — ₹{first:,.2f}",
         )
 
     # Flat → SMA7 mean-reversion re-entry.
@@ -187,11 +185,11 @@ def decide(position: Optional[dict], market: dict, cfg: ManagedConfig) -> Decisi
     trend = market.get("trend_7d", "")
     if gap <= -cfg.reentry_gap and trend != "Downward":
         return Decision(
-            "reenter", reason=f"Price ₹{abs(gap):.0f} below 7-day SMA — mean-reversion entry",
+            "reenter", reason=f"Price is ₹{abs(gap):.0f} below its recent average — buying the dip",
             price=price, qty=cfg.qty,
         )
-    downtrend = " (downtrend — skip)" if trend == "Downward" else ""
-    return Decision("wait", reason=f"No entry — gap ₹{gap:+.0f} vs SMA7{downtrend}")
+    downtrend = " (still falling — waiting)" if trend == "Downward" else ""
+    return Decision("wait", reason=f"No buy yet — price is ₹{gap:+.0f} from its recent average{downtrend}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -549,98 +547,102 @@ def format_levels_block(cfg: ManagedConfig, position: Optional[dict],
     `probs` (from probability.daily_reach_probs, keyed by absolute target price
     plus "stop") shows each level's dynamic reach-odds AND drives the chosen
     target shown."""
-    mode = "live" if cfg.live else "dry-run"
+    test = "  (test mode)" if not cfg.live else ""
     if position:
         entry = float(position["entry"])
         qty   = int(position["qty"])
         sl    = float(position["sl"])
-        lines = [f"🎯 *Managed plan — holding {qty} sh @ ₹{entry:,.2f}*  ({mode})"]
-        for i, d in enumerate(cfg.targets):
-            lvl = round(entry + d, 2)
-            p   = (probs or {}).get(lvl)
-            odds = f"  ·  {p}%" if p is not None else ""
-            lines.append(f"T{i + 1}  ₹{lvl:,.2f}  (+₹{d:.0f} · ₹{d * qty:,.0f}){odds}")
-        sp   = (probs or {}).get("stop")
-        sodds = f"  ·  {sp}%" if sp is not None else ""
-        lines.append(f"Stop  ₹{sl:,.2f}  (−₹{cfg.sl_rupees:.0f} · ₹{cfg.sl_rupees * qty:,.0f}){sodds}")
+        top   = round(entry + max(cfg.targets), 2)
+        target_price, aim = top, ""
         if probs:
-            lines.append("_odds = chance of reaching from the live price within ~a day (7/14/30-day moves)_")
-        chosen = choose_target(entry, probs or {}, cfg)
-        if chosen:
-            lines.append(f"Aiming to sell all at {chosen['label']} → ₹{chosen['price']:,.2f}  ({chosen['prob']}% reach)")
-        return "\n".join(lines)
+            chosen = choose_target(entry, probs, cfg)
+            if chosen:
+                target_price = chosen["price"]
+                aim = f"  ({chosen['prob']}% chance today)"
+        return "\n".join([
+            f"📊 *Holding {qty} shares — bought ₹{entry:,.2f}*{test}",
+            f"Aiming for ₹{target_price:,.2f}{aim}",
+            f"Will exit to protect if it drops to ₹{sl:,.2f}",
+        ])
 
-    # Flat — waiting to re-enter.
+    # Flat — waiting to buy the dip.
     reentry = round(float(sma7) - cfg.reentry_gap, 2)
-    ladder  = "/".join(f"+₹{d:.0f}" for d in cfg.targets)
+    top     = round(reentry + max(cfg.targets), 2)
     return "\n".join([
-        f"🎯 *Managed plan — flat, watching to re-enter*  ({mode})",
-        f"Re-enter when price ≤ ₹{reentry:,.2f}  (₹{cfg.reentry_gap:.0f} below the 7-day avg)",
-        f"Then {cfg.qty} sh, targets {ladder} from entry, stop −₹{cfg.sl_rupees:.0f}",
+        f"📊 *No shares right now — watching to buy*{test}",
+        f"Will buy {cfg.qty} shares if the price dips to about ₹{reentry:,.2f}",
+        f"Then aim for ₹{top:,.2f}, exiting to protect near ₹{reentry - cfg.sl_rupees:,.2f}",
     ])
 
 
 def format_managed_event(ticker: str, event_type: str, p: dict) -> Optional[str]:
     """WhatsApp/Telegram message for a managed-cycle event, or None to skip."""
     if event_type == "managed_adopt":
-        tlist = "  ".join(f"+₹{d:.0f}" for d in p["targets"])
+        top = round(float(p["entry"]) + max(p["targets"]), 2)
         return (
-            f"📋 *Managed cycle tracking — {ticker}*\n\n"
-            f"Now managing {p['qty']} sh @ ₹{p['entry']:,.2f}\n"
-            f"Targets: {tlist}    Stop: ₹{p['sl']:,.2f}"
+            f"📋 *Now managing {ticker}*\n"
+            f"Watching your {p['qty']} shares (bought around ₹{p['entry']:,.2f})\n"
+            f"Aiming for ₹{top:,.2f}  ·  safety exit ₹{p['sl']:,.2f}"
         )
     if event_type == "managed_dryrun":
-        verb = {"sell": "SELL", "exit_sl": "STOP-OUT (sell)", "reenter": "BUY"}.get(p["decision"], p["decision"].upper())
+        verb = {"sell": "sell", "exit_sl": "sell (safety exit)", "reenter": "buy"}.get(p["decision"], p["decision"])
         return (
-            f"🧪 *Managed cycle (dry-run) — {ticker}*\n\n"
-            f"WOULD {verb} {p['qty']} sh @ ₹{p['price']:,.2f}"
-            + (f"  ({p['label']})" if p.get("label") else "") + "\n"
-            f"{p['reason']}\n\n"
-            f"_No real order placed. Set MANAGED_CYCLE_LIVE=true to go live._"
+            f"🧪 *Test mode — {ticker}*\n"
+            f"Would {verb} {p['qty']} shares at ₹{p['price']:,.2f}\n"
+            f"{p['reason']}\n"
+            f"_Test only — no real order placed._"
         )
     if event_type == "managed_sell":
-        sign = "+" if p["pnl"] >= 0 else ""
-        head = "🛑 *Stop-loss exit*" if p["kind"] == "exit_sl" else "🎯 *Target hit — sold*"
+        won  = p["pnl"] >= 0
+        head = "🛑 *Sold" if p["kind"] == "exit_sl" else ("✅ *Sold" if won else "🔴 *Sold")
+        money = f"Profit ₹{p['pnl']:,.0f}" if won else f"Loss ₹{abs(p['pnl']):,.0f}"
         return (
-            f"{head} — {ticker}\n\n"
-            f"Sold {p['qty']} sh @ ₹{p['exit_price']:,.2f}  (entry ₹{p['entry']:,.2f})\n"
-            f"P&L: {sign}₹{p['pnl']:,.0f}\n{p['reason']}"
+            f"{head} {ticker}*\n"
+            f"{p['qty']} shares at ₹{p['exit_price']:,.2f}\n"
+            f"{money}  (bought at ₹{p['entry']:,.2f})\n"
+            f"{p['reason']}"
         )
     if event_type == "managed_buy":
-        tlist = "  ".join(f"+₹{d:.0f}" for d in p["targets"])
+        first = round(float(p["entry"]) + min(p["targets"]), 2)
+        top   = round(float(p["entry"]) + max(p["targets"]), 2)
         return (
-            f"🟢 *Managed cycle — bought {ticker}*\n\n"
-            f"{p['qty']} sh @ ₹{p['entry']:,.2f}\n"
-            f"Targets: {tlist}    Stop: ₹{p['sl']:,.2f}\n{p['reason']}"
+            f"🟢 *Bought {ticker}*\n"
+            f"{p['qty']} shares at ₹{p['entry']:,.2f}\n"
+            f"Target ₹{first:,.2f}–₹{top:,.2f}  ·  safety exit ₹{p['sl']:,.2f}\n"
+            f"{p['reason']}"
         )
     if event_type == "managed_exit_failed":
         return (
-            f"🚨 *Managed SELL FAILED — {ticker}*\n\n"
-            f"Tried to sell {p['qty']} sh ({p['reason']}) but the order did not fill. "
-            f"Your position may still be OPEN — check Zerodha now."
+            f"🚨 *Sell didn't go through — {ticker}*\n"
+            f"Tried to sell {p['qty']} shares but the order didn't complete. "
+            f"You may still own them — please check Zerodha now."
         )
     if event_type == "managed_open_failed":
-        return f"⚠️ *Managed BUY not filled — {ticker}*\n\nTried to buy {p['qty']} sh; order did not fill. No position opened."
+        return (
+            f"⚠️ *Buy didn't go through — {ticker}*\n"
+            f"Tried to buy {p['qty']} shares but the order didn't complete. Nothing was bought."
+        )
     if event_type == "managed_reconcile_warn":
         return (
-            f"⚠️ *Managed BUY skipped — {ticker}*\n\n"
-            f"A re-entry fired but Zerodha already shows {p['held']} sh held. No order placed — check positions."
+            f"⚠️ *Buy skipped — {ticker}*\n"
+            f"Wanted to buy, but Zerodha already shows {p['held']} shares held. "
+            f"Nothing bought — please check your positions."
         )
     if event_type == "managed_insufficient_funds":
         return (
-            f"💸 *Managed BUY skipped — {ticker}*\n\n"
-            f"Re-entry needs ₹{p['need']:,.0f} for {p['qty']} sh but only ₹{p['have']:,.0f} is available."
+            f"💸 *Buy skipped — {ticker}*\n"
+            f"Need ₹{p['need']:,.0f} to buy {p['qty']} shares, but only ₹{p['have']:,.0f} is available."
         )
     if event_type == "managed_blocked":
         return (
-            f"⏸️ *Managed re-entry paused — {ticker}*\n\n"
-            f"A re-entry signalled but is blocked: {p['reason']}.\n"
-            f"No new position today unless this clears."
+            f"⏸️ *Holding off — {ticker}*\n"
+            f"Wanted to buy again, but paused: {p['reason']}.\n"
+            f"No new buy today unless this clears."
         )
     if event_type == "managed_closed_externally":
         return (
-            f"ℹ️ *Managed position cleared — {ticker}*\n\n"
-            f"Zerodha shows 0 shares (sold outside the bot), so the tracked "
-            f"{p.get('qty', '?')}-share position was cleared. The cycle will look for a fresh entry."
+            f"ℹ️ *Position cleared — {ticker}*\n"
+            f"Zerodha shows 0 shares (sold outside the app), so I've cleared the tracked "
+            f"{p.get('qty', '?')} shares. I'll look for a fresh entry."
         )
     return None

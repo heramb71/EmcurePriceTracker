@@ -335,19 +335,11 @@ def format_pre_open_briefing(
     else:
         lines += [
             "",
-            f"🎯 *Entry zones today:*",
-            f"Good entry:   ₹{buy_zone:,.2f} or below  (₹20 below average)",
-            f"Strong entry: ₹{strong_zone:,.2f} or below  (₹25 below average)",
-            "",
-            f"{tier_emoji} *Confidence: {confidence_label}*",
-            f"Chance of +₹10 profit: {pred['reach_t1']:.0f}%",
-            f"Chance of +₹20 profit: {pred['reach_t2']:.0f}%",
-            f"Chance of +₹25 profit: {pred['reach_t3']:.0f}%",
-            f"Chance of stop loss:   {pred['p_stop']:.0f}%",
+            f"🎯 Buy if it dips to ₹{buy_zone:,.2f} or lower  (best below ₹{strong_zone:,.2f})",
+            f"{tier_emoji} Confidence: {confidence_label}",
+            f"Odds today — small win {pred['reach_t1']:.0f}%  ·  "
+            f"full target {pred['reach_t3']:.0f}%  ·  stop-out {pred['p_stop']:.0f}%",
         ]
-        if qty > 0 and pred["ev"] != 0:
-            ev_label = "expected profit" if pred["ev"] > 0 else "expected loss"
-            lines.append(f"Expected outcome per trade: ₹{pred['ev']:+,.0f} ({ev_label})")
 
     if pred["prior_loss_note"] and prior_losses > 0:
         lines += ["", f"⚠️ {pred['prior_loss_note']}"]
@@ -427,32 +419,19 @@ def format_post_open_briefing(
 
     lines += [
         "",
-        f"🎯 *Entry zones:*",
-        f"Good entry:   ₹{buy_zone:,.2f} or below",
-        f"Strong entry: ₹{strong_zone:,.2f} or below",
-        "",
-        f"🚦 *Signal: {action}*  ·  {tier_emoji} Confidence {pred['score']}/100",
+        f"🚦 *{action}*  ·  {tier_emoji} confidence {pred['score']}/100",
     ]
 
     if action in ("BUY", "STRONG BUY") and qty > 0:
         entry = current_price
         sl    = round(entry - risk_rupees / qty, 2)
         lines += [
-            "",
-            f"📋 *Trade plan if buying now ({qty} shares):*",
-            f"Buy at:       ₹{entry:,.2f}",
-            f"Sell half at: ₹{round(entry + 10):,.2f}  (+₹10, profit ~₹{10 * qty:,.0f})",
-            f"Final target: ₹{round(entry + 20):,.2f}  (+₹20, profit ~₹{20 * qty:,.0f})",
-            f"Stop loss:    ₹{sl:,.2f}  (max loss ₹{risk_rupees:,.0f})",
-            "",
-            f"Chance of +₹10: {pred['reach_t1']:.0f}%  |  +₹20: {pred['reach_t2']:.0f}%  |  +₹25: {pred['reach_t3']:.0f}%  |  Stop: {pred['p_stop']:.0f}%",
+            f"If you buy now ({qty} shares):",
+            f"Sell half around ₹{round(entry + 10):,.2f}, the rest around ₹{round(entry + 20):,.2f}",
+            f"Safety exit ₹{sl:,.2f}  (max loss ₹{risk_rupees:,.0f})",
         ]
     else:
-        lines += [
-            "",
-            f"Stock not in buy zone yet. Buy zone starts at ₹{buy_zone:,.2f}.",
-            f"Keep watching — alert will fire if price drops there.",
-        ]
+        lines.append(f"Not in the buy zone yet — it starts at ₹{buy_zone:,.2f}. I'll alert you if it dips there.")
 
     return "\n".join(lines)
 
@@ -550,31 +529,20 @@ def format_eod_summary(
         lines += ["", managed_block, "", f"⏰ Next update: tomorrow at 9:00 AM"]
         return "\n".join(lines)
 
-    lines.append(f"{setup_signal}")
+    lines.append(setup_signal)
 
     if gap <= -15:
-        lines += [
-            f"Stock is ₹{abs(gap):.0f} below its 7-day average — entering buy territory.",
-            f"Good entry zone: ₹{buy_zone:,.2f} or below",
-            f"Strong entry zone: ₹{strong_zone:,.2f} or below",
-        ]
+        lines.append(f"It's ₹{abs(gap):.0f} below its 7-day average — in buy territory. Watch ₹{buy_zone:,.2f} or lower.")
     elif gap > 0:
-        lines += [
-            f"Stock is ₹{abs(gap):.0f} above its average — no buy setup yet.",
-            f"Wait for a pullback to ₹{buy_zone:,.2f} or lower.",
-        ]
+        lines.append(f"It's ₹{abs(gap):.0f} above its average — no setup yet. Wait for a dip to ₹{buy_zone:,.2f}.")
     else:
-        lines += [
-            f"Stock is close to its average. Buy zone starts at ₹{buy_zone:,.2f}.",
-        ]
+        lines.append(f"Close to its average — buy zone starts at ₹{buy_zone:,.2f}.")
 
     lines += [
         "",
-        f"{tier_emoji} *Confidence for tomorrow: {tomorrow_confidence}*",
-        f"Chance of +₹10: {pred['reach_t1']:.0f}%",
-        f"Chance of +₹20: {pred['reach_t2']:.0f}%",
-        f"Chance of +₹25: {pred['reach_t3']:.0f}%",
-        f"Chance of stop: {pred['p_stop']:.0f}%",
+        f"{tier_emoji} Tomorrow: {tomorrow_confidence}",
+        f"Odds — small win {pred['reach_t1']:.0f}%  ·  "
+        f"full target {pred['reach_t3']:.0f}%  ·  stop-out {pred['p_stop']:.0f}%",
         "",
         f"⏰ Next update: tomorrow at 9:00 AM",
     ]

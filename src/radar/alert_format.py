@@ -48,25 +48,28 @@ def signal_label(signal_type: str) -> str:
     return _SIGNAL_LABELS.get(signal_type, signal_type)
 
 
+def _regime_plain(regime: str) -> str:
+    if regime == TRENDING_BULL:
+        return "trending up"
+    if regime == TRENDING_BEAR:
+        return "trending down (risky)"
+    return "choppy / sideways"
+
+
 def format_opportunity(
     signal: SignalHit, confidence: int, regime: str, price: float
 ) -> str:
-    """The single-signal 🚨 TRADE OPPORTUNITY message."""
+    """The single-signal 🚨 trade-idea message (for manual review only)."""
     lo, hi = signal.entry_zone
-    conditions = "\n".join(f"✓ {c}" for c in signal.conditions)
+    conditions = "\n".join(f"• {c}" for c in signal.conditions)
     return (
-        "🚨 TRADE OPPORTUNITY\n\n"
-        f"Stock: {signal.stock}\n"
-        f"Signal: {signal_label(signal.signal_type)}\n"
-        f"Current Price: ₹{price:.2f}\n"
-        f"Confidence Score: {confidence}/100\n"
-        f"Market Regime: {regime}\n\n"
-        "Reason:\n"
-        f"{conditions}\n\n"
-        f"Suggested Entry Zone: ₹{lo:.2f} – ₹{hi:.2f}\n"
-        f"Suggested Stop Loss: ₹{signal.stop:.2f}\n"
-        f"Suggested Target: ₹{signal.target:.2f}\n"
-        f"Risk:Reward: {signal.rr:.2f}\n\n"
+        f"🚨 Trade idea — {signal.stock}\n\n"
+        f"{signal_label(signal.signal_type)}  ·  now ₹{price:.2f}\n"
+        f"Buy zone ₹{lo:.2f}–₹{hi:.2f}\n"
+        f"Target ₹{signal.target:.2f}  ·  safety exit ₹{signal.stop:.2f}  "
+        f"(risk/reward {signal.rr:.1f})\n"
+        f"Confidence {confidence}/100  ·  market {_regime_plain(regime)}\n\n"
+        f"Why:\n{conditions}\n\n"
         f"{_FOOTER}"
     )
 
@@ -164,12 +167,12 @@ def format_digest(
     items: list[tuple[SignalHit, int]], regime: str
 ) -> str:
     """Compact multi-signal digest for lower-ranked hits (one Telegram message)."""
-    lines = [f"📡 RADAR DIGEST — {regime}", ""]
+    lines = [f"📡 A few more ideas to review — market {_regime_plain(regime)}", ""]
     for sig, conf in items:
         lines.append(
-            f"• {sig.stock} — {signal_label(sig.signal_type)} "
-            f"({conf}/100) | T ₹{sig.target:.1f} / SL ₹{sig.stop:.1f} "
-            f"| RR {sig.rr:.1f}"
+            f"• {sig.stock} — {signal_label(sig.signal_type)}  ·  "
+            f"target ₹{sig.target:.1f}, exit ₹{sig.stop:.1f}  "
+            f"(confidence {conf}, risk/reward {sig.rr:.1f})"
         )
     lines += ["", _FOOTER]
     return "\n".join(lines)

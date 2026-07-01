@@ -58,7 +58,7 @@ def test_decide_sell_when_top_target_reached_and_price_still_there():
     market = {"price": 1764, "day_high": 1764, "day_low": 1740}
     d = decide(_pos(), market, _cfg())
     assert d.action == "sell" and d.price == 1764 and d.qty == 8
-    assert "reached" in d.reason
+    assert "target" in d.reason.lower()
 
 
 def test_decide_sell_when_top_touched_intraday_price_pulled_back():
@@ -67,8 +67,8 @@ def test_decide_sell_when_top_touched_intraday_price_pulled_back():
     market = {"price": 1762, "day_high": 1764, "day_low": 1740}
     d = decide(_pos(), market, _cfg())
     assert d.action == "sell" and d.price == 1762 and d.qty == 8
-    assert "pulled back" in d.reason
-    assert "reached" not in d.reason
+    assert "pulled back" in d.reason.lower()
+    assert "target" not in d.reason.lower()
 
 
 def test_decide_exit_sl_takes_priority_over_target():
@@ -188,7 +188,7 @@ def test_step_decides_on_broker_ltp_not_stale_quote():
     dry = [e[1] for e in events if e[0] == "managed_dryrun"]
     assert dry, "should have fired a decision off the live LTP"
     assert dry[0]["decision"] == "sell"
-    assert "Top target" in dry[0]["reason"]
+    assert "target" in dry[0]["reason"].lower()
 
 
 def test_step_keeps_quote_price_when_broker_unauthenticated():
@@ -225,16 +225,15 @@ def test_step_dryrun_adopts_holding_and_announces_no_orders():
 def test_levels_block_holding_shows_managed_ladder():
     pos = {"entry": 1733.10, "qty": 8, "sl": 1633.10}
     block = format_levels_block(_cfg(), pos, sma7=1740.0)
-    assert "holding 8 sh @ ₹1,733.10" in block
-    assert "T1  ₹1,748.10" in block and "T3  ₹1,763.10" in block   # +15 / +30
-    assert "Stop  ₹1,633.10" in block
-    assert "+₹30" in block                                          # T3 ladder line
+    assert "Holding 8 shares" in block and "₹1,733.10" in block
+    assert "1,763.10" in block          # aiming for the top target (+₹30)
+    assert "1,633.10" in block          # safety exit
 
 
 def test_levels_block_flat_shows_reentry_trigger():
     block = format_levels_block(_cfg(), None, sma7=1740.0)
-    assert "flat, watching to re-enter" in block
-    assert "≤ ₹1,720.00" in block                                   # 1740 − reentry_gap 20
+    assert "watching to buy" in block
+    assert "1,720.00" in block                                      # 1740 − reentry_gap 20
 
 
 def test_pre_open_briefing_swaps_in_managed_block():
@@ -244,8 +243,8 @@ def test_pre_open_briefing_swaps_in_managed_block():
         capital=100000, risk_rupees=4500, managed_block=sentinel,
     )
     assert sentinel in msg
-    assert "Chance of +₹10 profit" not in msg     # legacy probability ladder replaced
-    assert "Entry zones today" not in msg
+    assert "Odds today" not in msg                 # legacy probability ladder replaced
+    assert "Buy if it dips" not in msg
 
 
 def test_pre_open_briefing_legacy_unchanged_without_block():
@@ -253,16 +252,15 @@ def test_pre_open_briefing_legacy_unchanged_without_block():
         ticker="EMCURE", price=1700.0, sma7=1722.0, trend_7d="Upward", atr=30.0,
         capital=100000, risk_rupees=4500,
     )
-    assert "Chance of +₹10 profit" in msg          # legacy path intact (backward compatible)
+    assert "Odds today" in msg                     # legacy path intact (backward compatible)
 
 
 def test_levels_block_includes_reach_odds_and_chosen_target():
     pos = {"entry": 1733.10, "qty": 8, "sl": 1633.10}
     probs = {1748.10: 85, 1753.10: 78, 1763.10: 72, "stop": 18}
     block = format_levels_block(_cfg(reach_min_prob=50), pos, sma7=1740.0, probs=probs)
-    assert "85%" in block and "72%" in block and "18%" in block
-    assert "reaching from the live price" in block
-    assert "Aiming to sell all at +₹30" in block      # all clear 50 → aim T3
+    assert "1,763.10" in block          # all clear 50 → aim for the top target (+₹30)
+    assert "72%" in block               # its chance shown in plain words
 
 
 # ── Phase 2 safety guards: kill-switch, cooldown, stop-out, external close ────

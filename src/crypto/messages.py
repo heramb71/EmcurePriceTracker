@@ -54,20 +54,20 @@ def _rsi_label(rsi: float) -> str:
 
 def _momentum_label(rsi: float) -> str:
     if rsi >= 70:
-        return f"Overbought ({rsi:.0f}) — may pull back soon ⚠️"
+        return "run up fast — may pull back soon ⚠️"
     if rsi >= 55:
-        return f"Strong upward momentum ({rsi:.0f}) 📈"
+        return "strong and rising 📈"
     if rsi >= 45:
-        return f"Neutral ({rsi:.0f}) — no clear direction"
+        return "no clear direction"
     if rsi >= 30:
-        return f"Weak, but recovery possible ({rsi:.0f}) 📉"
-    return f"Oversold ({rsi:.0f}) — possible bounce zone 🔥"
+        return "a bit weak, but could recover 📉"
+    return "unusually low — possible bounce zone 🔥"
 
 
 def _macd_label(macd_hist: float) -> str:
     if macd_hist > 0:
-        return "Short-term trend turning UP ✅"
-    return "Short-term trend turning DOWN ❌"
+        return "turning up ✅"
+    return "turning down ❌"
 
 
 def _asset_block_short(name: str, sym: str, quote: dict, sig: dict) -> list[str]:
@@ -181,17 +181,14 @@ def format_evening_summary(
             f"Price:    ₹{quote['price_inr']:,.0f}  (${quote['price_usd']:,.0f})",
             f"Today:    {arrow} {sign}{pct:.1f}%   |   Last 7 days: {sig['change_7d_pct']:+.1f}%",
             "",
-            f"📊 *Market Conditions:*",
+            f"How it looks:",
             f"Momentum: {_momentum_label(sig['rsi'])}",
-            f"Trend:    {_macd_label(sig['macd_hist'])}",
-            f"Direction: {trend_emoji} {sig['trend']}",
-            f"vs 50-day avg:  {'Above ✅' if above_50  else 'Below ❌'}  (₹{ema50:,.0f})",
-            f"vs 200-day avg: {'Above ✅' if above_200 else 'Below ❌'}  (₹{ema200:,.0f})",
+            f"Short-term trend: {_macd_label(sig['macd_hist'])}",
+            f"Longer-term: {'above ✅' if above_200 else 'below ❌'} its 200-day average",
             "",
-            f"Support zone: ₹{support:,.0f}  (price tends to bounce here)",
-            f"Resist zone:  ₹{resist:,.0f}  (price tends to struggle here)",
+            f"Tends to bounce near ₹{support:,.0f}, struggle near ₹{resist:,.0f}",
             "",
-            f"{signal_emoji} *Signal: {sig['signal']}*",
+            f"{signal_emoji} *{sig['signal']}*",
             "",
         ]
 
@@ -238,13 +235,12 @@ def format_signal_alert(
         f"Price: ₹{quote['price_inr']:,.0f}  (${quote['price_usd']:,.0f})",
         f"Today: {arrow} {sign}{pct:.1f}%   |   Last 7 days: {sig['change_7d_pct']:+.1f}%",
         "",
-        f"📊 *What the indicators say:*",
+        f"How it looks:",
         f"Momentum: {_momentum_label(rsi)}",
-        f"Trend:    {_macd_label(sig['macd_hist'])}",
-        f"Direction: {_TREND_EMOJI.get(sig['trend'], '📊')} {sig['trend']}",
+        f"Short-term trend: {_macd_label(sig['macd_hist'])}",
         "",
-        f"Support zone: ₹{sig['bb_lower'] * usd_inr:,.0f}",
-        f"Resist zone:  ₹{sig['bb_upper'] * usd_inr:,.0f}",
+        f"Tends to bounce near ₹{sig['bb_lower'] * usd_inr:,.0f}, "
+        f"struggle near ₹{sig['bb_upper'] * usd_inr:,.0f}",
     ]
 
     if rsi_note:
