@@ -41,6 +41,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from src.alerts import send_whatsapp_alert, send_alert
+from src import channels
 from crypto.data import fetch_crypto_daily, fetch_crypto_quote, fetch_usd_inr
 from crypto.messages import (
     format_evening_summary,
@@ -110,9 +111,8 @@ def main() -> None:
     wa_token = os.getenv("TWILIO_AUTH_TOKEN", "")
     wa_from  = os.getenv("TWILIO_WHATSAPP_FROM", "")
     wa_to    = os.getenv("TWILIO_WHATSAPP_TO", "")
-    tg_token   = os.getenv("TELEGRAM_TOKEN", "")
-    tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
-    wa_ready = bool(wa_sid and wa_token and wa_from and wa_to)
+    tg_token, tg_chat_id = channels.telegram_config("crypto")
+    wa_ready = channels.whatsapp_enabled() and bool(wa_sid and wa_token and wa_from and wa_to)
     tg_ready = bool(tg_token and tg_chat_id)
     if not (wa_ready or tg_ready):
         logger.error("No alert channel configured — set TWILIO_* and/or TELEGRAM_* in .env")

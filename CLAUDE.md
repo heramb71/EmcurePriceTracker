@@ -117,8 +117,18 @@ TWILIO_AUTH_TOKEN=
 TWILIO_WHATSAPP_FROM=+14155238886
 TWILIO_WHATSAPP_TO=+91XXXXXXXXXX
 
-TELEGRAM_TOKEN=           # Optional (periodically govt-blocked in India)
-TELEGRAM_CHAT_ID=         # Optional
+# ── Telegram (PRIMARY channel) ──
+TELEGRAM_TOKEN=           # Shared bot — fallback for any service without its own
+TELEGRAM_CHAT_ID=
+# Per-service bots — isolate the three feeds. Blank → falls back to shared above.
+TELEGRAM_EMCURE_TOKEN=    # emcure: main_headless.py + bot_server.py (commands)
+TELEGRAM_EMCURE_CHAT_ID=
+TELEGRAM_RADAR_TOKEN=     # radar:  radar_headless.py (multi-stock scanner)
+TELEGRAM_RADAR_CHAT_ID=
+TELEGRAM_CRYPTO_TOKEN=    # crypto: crypto_headless.py
+TELEGRAM_CRYPTO_CHAT_ID=
+
+WHATSAPP_ENABLED=false    # OPT-IN fan-out to Twilio WhatsApp (default off)
 
 HEADLESS=true             # Set true on server
 
@@ -137,9 +147,14 @@ MANAGED_REENTRY_COOLDOWN_MIN=60   # min minutes between an exit and the next ent
 MANAGED_BLOCK_REENTRY_AFTER_STOP=true  # no re-entry the same day after a stop-out
 ```
 
-**Alert channels (all additive — every alert fans out to each one configured):**
-- **WhatsApp** (Twilio creds + `WHATSAPP_ENABLED=true`) — works in India; 50/day trial cap.
-- **Telegram** (`TELEGRAM_TOKEN`+`TELEGRAM_CHAT_ID`) — server still sends, but blocked on the user's phone in India.
+**Alert channels** — resolved centrally in `src/channels.py`:
+- **Telegram is primary.** Each service owns a dedicated bot so the three feeds stay separate:
+  `emcure` (main_headless + bot_server commands), `radar` (radar_headless), `crypto` (crypto_headless).
+  Per-service `TELEGRAM_<SERVICE>_TOKEN` / `_CHAT_ID` override the shared `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID`;
+  any blank value falls back to the shared bot, so a single-bot setup still works unchanged.
+  (Telegram is periodically govt-blocked in India — `src/alerts.py` has a circuit breaker.)
+- **WhatsApp** is an **opt-in fan-out**, off by default. Set `WHATSAPP_ENABLED=true` (plus Twilio creds)
+  to additionally mirror every alert to WhatsApp (50/day trial cap; over-limit sends silently fail).
 
 ---
 
@@ -233,7 +248,8 @@ tail -f /var/log/emcure/radar.log
 ```
 
 Config lives under the `RADAR_*` keys in `.env` (see `.env.example`). Telegram
-only — reuses `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID`.
+only — uses the `radar` bot (`TELEGRAM_RADAR_TOKEN` / `TELEGRAM_RADAR_CHAT_ID`,
+falling back to the shared `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID`). See `src/channels.py`.
 
 **End-of-day summaries:** after market close on each trading day the radar sends
 one per-stock EOD summary (OHLC, RSI/MACD/regime, tomorrow's SMA7 reversion watch

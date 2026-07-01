@@ -82,7 +82,10 @@ def _legacy_buy_data() -> dict:
 
 
 def _run_dispatch(monkeypatch, sent: list) -> None:
-    # No manual trade, WhatsApp send recorded instead of sent.
+    # No manual trade, WhatsApp send recorded instead of sent. WhatsApp is
+    # opt-in (default off) — force it on so it stays a usable observation channel
+    # for this suppression test regardless of the global default.
+    monkeypatch.setenv("WHATSAPP_ENABLED", "true")
     monkeypatch.setattr(main_headless, "check_and_mark", lambda *a, **k: [])
     monkeypatch.setattr(main_headless, "send_whatsapp_alert", lambda *a, **k: sent.append(a) or True)
     now = datetime(2026, 6, 18, 11, 0, tzinfo=_IST)   # 11:00 — outside every briefing window

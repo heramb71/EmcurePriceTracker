@@ -26,10 +26,12 @@ from rich.live import Live
 
 load_dotenv()
 
+from src import channels
+
 TICKER              = os.getenv("TICKER", "EMCURE")
 REFRESH_SECONDS     = int(os.getenv("REFRESH_SECONDS", "300"))
-TELEGRAM_TOKEN      = os.getenv("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID    = os.getenv("TELEGRAM_CHAT_ID", "")
+# Interactive Emcure dashboard → Emcure Telegram feed (falls back to shared).
+TELEGRAM_TOKEN, TELEGRAM_CHAT_ID = channels.telegram_config("emcure")
 
 TWILIO_ACCOUNT_SID    = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN     = os.getenv("TWILIO_AUTH_TOKEN", "")
@@ -511,8 +513,9 @@ def main() -> None:
     news_monitor.start()
 
     last_alerted: dict = {}
-    wa_ready = all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
-                    TWILIO_WHATSAPP_FROM, TWILIO_WHATSAPP_TO])
+    wa_ready = channels.whatsapp_enabled() and all([
+        TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
+        TWILIO_WHATSAPP_FROM, TWILIO_WHATSAPP_TO])
 
     with Live(screen=True, refresh_per_second=1) as live:
         while True:

@@ -19,6 +19,7 @@ from datetime import datetime, time as dtime, timedelta, timezone
 from dotenv import load_dotenv
 
 from src.alerts import send_alert
+from src import channels
 from src.holidays import is_market_holiday
 from src.radar import analytics, scan, scoring, store, tracker
 from src.radar.alert_format import format_digest, format_eod_stock, format_opportunity
@@ -154,8 +155,7 @@ def main() -> None:
         logger.info("RADAR_ENABLED is not true — exiting.")
         return
 
-    tg_token = os.getenv("TELEGRAM_TOKEN", "")
-    tg_chat = os.getenv("TELEGRAM_CHAT_ID", "")
+    tg_token, tg_chat = channels.telegram_config("radar")
     if not (tg_token and tg_chat):
         logger.warning("Telegram not configured — alerts will be skipped (scan + DB still run).")
 

@@ -46,6 +46,7 @@ def _warn_if_env_world_readable() -> None:
 from src.sentiment import load_sentiment_model
 from src.holidays import is_market_holiday, format_holiday_alert
 from src.broker import KiteBroker
+from src import channels
 from src.alerts import (
     send_alert,
     send_whatsapp_alert,
@@ -160,11 +161,10 @@ _SEND_RETRY_DELAY_S = 2
 
 
 def _whatsapp_enabled() -> bool:
-    """WhatsApp delivery is opt-out via WHATSAPP_ENABLED. Twilio's trial caps at
-    50 msgs/day, and every alert fans out to both channels — so when running
-    Telegram-only, set WHATSAPP_ENABLED=false to stop burning that cap (which
-    silently drops the messages that land over the limit)."""
-    return os.getenv("WHATSAPP_ENABLED", "true").lower() == "true"
+    """WhatsApp is an opt-in fan-out gated by WHATSAPP_ENABLED (default off).
+    Telegram is the primary channel; Twilio's trial caps at 50 msgs/day and
+    silently drops anything over the limit. See src/channels.py."""
+    return channels.whatsapp_enabled()
 
 
 def _retry_send(send_fn, *args) -> bool:
@@ -575,8 +575,7 @@ def _broadcast(msg: str) -> None:
     wa_token = os.getenv("TWILIO_AUTH_TOKEN", "")
     wa_from  = os.getenv("TWILIO_WHATSAPP_FROM", "")
     wa_to    = os.getenv("TWILIO_WHATSAPP_TO", "")
-    tg_token   = os.getenv("TELEGRAM_TOKEN", "")
-    tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    tg_token, tg_chat_id = channels.telegram_config("emcure")
     if _whatsapp_enabled() and wa_sid and wa_token and wa_from and wa_to:
         if not _retry_send(send_whatsapp_alert, wa_sid, wa_token, wa_from, wa_to, msg):
             logger.error("WhatsApp broadcast dropped after retry (%d chars)", len(msg))
@@ -630,8 +629,7 @@ def main() -> None:
     wa_token = os.getenv("TWILIO_AUTH_TOKEN", "")
     wa_from  = os.getenv("TWILIO_WHATSAPP_FROM", "")
     wa_to    = os.getenv("TWILIO_WHATSAPP_TO", "")
-    tg_token   = os.getenv("TELEGRAM_TOKEN", "")
-    tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    tg_token, tg_chat_id = channels.telegram_config("emcure")
     capital     = float(os.getenv("CAPITAL", "100000"))
     risk_rupees = float(os.getenv("RISK_RUPEES", "4500"))
     risk_pct    = float(os.getenv("RISK_PCT", "1.0"))

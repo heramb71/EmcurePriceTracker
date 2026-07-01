@@ -29,6 +29,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from src.trade_manager import set_trade, clear_trade, get_trade, current_pnl
 from src.state import load_state
+from src import channels
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
@@ -40,8 +41,9 @@ AUTHORIZED           = os.getenv("TWILIO_WHATSAPP_TO", "").replace("whatsapp:", 
 TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN    = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM", "")
-TELEGRAM_TOKEN       = os.getenv("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID     = os.getenv("TELEGRAM_CHAT_ID", "")
+# Emcure command bot: BUY/SELL/STATUS route to the Emcure Telegram feed
+# (falls back to the shared TELEGRAM_TOKEN / TELEGRAM_CHAT_ID).
+TELEGRAM_TOKEN, TELEGRAM_CHAT_ID = channels.telegram_config("emcure")
 HEALTH_API_KEY    = os.getenv("HEALTH_API_KEY", "")
 KITE_API_KEY      = os.getenv("KITE_API_KEY", "")
 KITE_API_SECRET   = os.getenv("KITE_API_SECRET", "")
