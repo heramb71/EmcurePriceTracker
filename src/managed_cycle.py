@@ -146,10 +146,19 @@ def decide(position: Optional[dict], market: dict, cfg: ManagedConfig) -> Decisi
         if touched:
             floor  = max(touched)
             fdelta = floor - entry
-            if floor >= top:                         # top rung reached — book it
+            if floor >= top:
+                if price >= top:             # still at/above top — book it outright
+                    return Decision(
+                        "sell", price=price, qty=qty, label=f"+₹{fdelta:.0f}",
+                        reason=f"Top target ₹{floor:,.2f} (+₹{fdelta:.0f}) reached",
+                    )
+                # Top rung was touched intraday (via day_high) but price has since
+                # pulled back below it — the 5-min cycle missed the peak. Sell now
+                # at current price rather than holding through further downside.
                 return Decision(
-                    "sell", price=floor, qty=qty, label=f"+₹{fdelta:.0f}",
-                    reason=f"Top target ₹{floor:,.2f} (+₹{fdelta:.0f}) reached",
+                    "sell", price=price, qty=qty, label=f"+₹{fdelta:.0f}",
+                    reason=(f"Top ₹{floor:,.2f} touched intraday, pulled back to "
+                            f"₹{price:,.2f} — selling to close"),
                 )
             if price <= floor:                       # pulled back to a touched rung
                 return Decision(

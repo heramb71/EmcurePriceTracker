@@ -53,10 +53,22 @@ def _pos(entry=1733.10, qty=8, sl=1633.10):
 # The held-position exit is now a mechanical touched-target FLOOR (no probability
 # gating). Ladder off entry 1733.10 → T1 1748.10, T2 1753.10, T3 1763.10.
 
-def test_decide_sell_when_top_target_reached():
-    market = {"price": 1762, "day_high": 1764, "day_low": 1740}      # high clears T3
+def test_decide_sell_when_top_target_reached_and_price_still_there():
+    # Current price is still at/above T3 — sell at current price.
+    market = {"price": 1764, "day_high": 1764, "day_low": 1740}
     d = decide(_pos(), market, _cfg())
-    assert d.action == "sell" and d.price == 1763.10 and d.qty == 8
+    assert d.action == "sell" and d.price == 1764 and d.qty == 8
+    assert "reached" in d.reason
+
+
+def test_decide_sell_when_top_touched_intraday_price_pulled_back():
+    # day_high cleared T3 (1763.10) but current price has fallen back below it.
+    # Should still sell (at current price), not claim "top target reached".
+    market = {"price": 1762, "day_high": 1764, "day_low": 1740}
+    d = decide(_pos(), market, _cfg())
+    assert d.action == "sell" and d.price == 1762 and d.qty == 8
+    assert "pulled back" in d.reason
+    assert "reached" not in d.reason
 
 
 def test_decide_exit_sl_takes_priority_over_target():
