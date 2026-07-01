@@ -227,11 +227,12 @@ def _update_position(**fields) -> None:
 
 def set_position(entry: float, qty: int, cfg: ManagedConfig) -> dict:
     pos = {
-        "entry":     round(float(entry), 2),
-        "qty":       int(qty),
-        "sl":        round(float(entry) - cfg.sl_rupees, 2),
-        "targets":   list(cfg.targets),
-        "opened_at": datetime.now().isoformat(timespec="seconds"),
+        "entry":            round(float(entry), 2),
+        "qty":              int(qty),
+        "sl":               round(float(entry) - cfg.sl_rupees, 2),
+        "targets":          list(cfg.targets),
+        "opened_at":        datetime.now().isoformat(timespec="seconds"),
+        "high_since_entry": round(float(entry), 2),
     }
     state = _load()
     state["position"] = pos
@@ -360,6 +361,20 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
         from src.probability import daily_reach_probs
         up_levels = [round(float(position["entry"]) + d, 2) for d in cfg.targets]
         market = {**market, "target_probs": daily_reach_probs(df_daily, float(market.get("price", 0) or 0), up_levels)}
+
+    # day_high from yfinance is the SESSION-WIDE high including the pre-entry
+    # morning spike — using it raw triggers immediate false sells on the first
+    # cycle after entry. Shadow it with high_since_entry: the max price we have
+    # actually observed WHILE holding the position.
+    if position:
+        cur = float(market.get("price", 0) or 0)
+        if cur > 0:
+            prev_high = float(position.get("high_since_entry") or position["entry"])
+            new_high  = max(prev_high, cur)
+            if new_high != prev_high:
+                _update_position(high_since_entry=round(new_high, 2))
+                position = {**position, "high_since_entry": round(new_high, 2)}
+            market = {**market, "day_high": new_high}
 
     decision = decide(position, market, cfg)
     logger.info("Managed-cycle decision: %s — %s", decision.action, decision.reason)

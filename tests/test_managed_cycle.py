@@ -151,9 +151,24 @@ class _FakeBroker:
         return {"status": "COMPLETE", "fill_price": 0.0, "filled_qty": 0}
 
 
+def test_step_ignores_pre_entry_day_high():
+    """Regression: stock opened ~₹1850 (above top target), dipped ₹28, entry
+    at ₹1819.70. First cycle after fill must NOT immediately sell because
+    day_high from yfinance includes the pre-entry morning spike."""
+    set_position(1819.70, 8, _cfg(targets=(15.0, 20.0, 30.0), sl_rupees=100))
+    # price is barely off entry; day_high carries the morning high well above top target
+    market = {"price": 1819.80, "day_high": 1860.0, "day_low": 1810.0,
+              "atr": 35.0, "gap": -28, "trend_7d": "Upward"}
+    events = mc.step("EMCURE", market, None, _cfg(live=False))
+    kinds = [e[0] for e in events]
+    assert "managed_dryrun" not in kinds   # must NOT fire a sell
+
+
 def test_step_dryrun_adopts_holding_and_announces_no_orders():
     broker = _FakeBroker(held=8, avg=1733.10)
-    market = {"price": 1762, "day_high": 1764, "day_low": 1740, "atr": 35.0,
+    # price=1764 puts current price above T3 (1763.10) so the post-entry high
+    # alone triggers the sell — independent of any pre-entry session high.
+    market = {"price": 1764, "day_high": 1800, "day_low": 1740, "atr": 35.0,
               "gap": 0, "trend_7d": "Upward"}
     events = mc.step("EMCURE", market, broker, _cfg(live=False))
 
