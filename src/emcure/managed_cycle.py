@@ -355,6 +355,18 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
                 if cfg.live:
                     _ensure_protective_stop(ticker, broker)   # resting exchange stop
 
+    # Decision price: prefer the broker's real-time last-traded price over the
+    # yfinance quote (NSE lags up to ~15 min there), so stop / target / re-entry
+    # decisions act on live data. Only when authenticated; get_ltp returns 0.0 on
+    # any failure, in which case we keep the caller's price. day_high / day_low
+    # stay from the passed quote (kite.ltp carries no OHLC) — that's fine: the
+    # held-position peak is tracked separately via high_since_entry below.
+    if (broker is not None and getattr(broker, "is_authenticated", None)
+            and broker.is_authenticated()):
+        ltp = broker.get_ltp(ticker)
+        if ltp and ltp > 0:
+            market = {**market, "price": round(float(ltp), 2)}
+
     # Dynamic reach-probabilities from the CURRENT price (7/14/30-day moves) so the
     # target picker promotes higher targets only as they actually become likely.
     if position and df_daily is not None and "target_probs" not in market:

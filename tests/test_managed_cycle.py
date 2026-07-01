@@ -164,6 +164,44 @@ def test_step_ignores_pre_entry_day_high():
     assert "managed_dryrun" not in kinds   # must NOT fire a sell
 
 
+class _LtpBroker:
+    """Authenticated broker stub returning a fixed real-time LTP (no orders)."""
+    def __init__(self, ltp: float, held: int):
+        self._ltp, self._held = ltp, held
+    def is_authenticated(self) -> bool:
+        return True
+    def get_ltp(self, ticker: str) -> float:
+        return self._ltp
+    def held_qty(self, ticker: str):
+        return self._held
+
+
+def test_step_decides_on_broker_ltp_not_stale_quote():
+    """The managed cycle must act on the broker's real-time LTP, not the
+    (up-to-~15-min stale) yfinance price in `market`. Here the quote still shows
+    ~entry, but the live LTP has reached the top target → must sell."""
+    set_position(1800.0, 8, _cfg(targets=(15.0, 20.0, 30.0), sl_rupees=30))
+    stale = {"price": 1801.0, "day_high": 1801.0, "day_low": 1795.0,
+             "atr": 30.0, "gap": 0, "trend_7d": "Upward"}
+    broker = _LtpBroker(ltp=1831.0, held=8)          # 1831 ≥ top target 1830
+    events = mc.step("EMCURE", stale, broker, _cfg(live=False))
+    dry = [e[1] for e in events if e[0] == "managed_dryrun"]
+    assert dry, "should have fired a decision off the live LTP"
+    assert dry[0]["decision"] == "sell"
+    assert "Top target" in dry[0]["reason"]
+
+
+def test_step_keeps_quote_price_when_broker_unauthenticated():
+    """If the broker isn't authenticated, fall back to the passed quote price
+    (get_ltp is never trusted) — no spurious LTP-driven exit."""
+    set_position(1800.0, 8, _cfg(targets=(15.0, 20.0, 30.0), sl_rupees=30))
+    stale = {"price": 1801.0, "day_high": 1801.0, "day_low": 1795.0,
+             "atr": 30.0, "gap": 0, "trend_7d": "Upward"}
+    # No is_authenticated attr at all → treated as unauthenticated, LTP ignored.
+    events = mc.step("EMCURE", stale, None, _cfg(live=False))
+    assert "managed_dryrun" not in [e[0] for e in events]   # holds
+
+
 def test_step_dryrun_adopts_holding_and_announces_no_orders():
     broker = _FakeBroker(held=8, avg=1733.10)
     # price=1764 puts current price above T3 (1763.10) so the post-entry high
