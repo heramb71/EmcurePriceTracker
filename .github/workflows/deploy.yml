@@ -60,10 +60,12 @@ jobs:
           echo "Deploying main to $SSH_USER@$SSH_HOST:$PORT via deploy/update.sh"
           # update.sh must already exist on the server (from a prior deploy or
           # the first-time setup). It self-updates when it syncs the repo.
+          # Direct path (not `bash …`) so it matches a narrow sudoers rule:
+          #   <deploy-user> ALL=(root) NOPASSWD: /opt/emcure/deploy/update.sh
           ssh -i ~/.ssh/id_deploy -p "$PORT" \
             -o StrictHostKeyChecking=accept-new \
             "$SSH_USER@$SSH_HOST" \
-            "sudo bash /opt/emcure/deploy/update.sh"
+            "sudo -n /opt/emcure/deploy/update.sh"
 
       - name: Cleanup key
         if: always()
