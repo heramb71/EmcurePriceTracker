@@ -202,6 +202,115 @@ def test_step_keeps_quote_price_when_broker_unauthenticated():
     assert "managed_dryrun" not in [e[0] for e in events]   # holds
 
 
+# ── Full exit matrix ─────────────────────────────────────────────────────────
+# Entry ₹1000, targets +10/+20/+30 → T1 1010, T2 1020, T3(top) 1030, stop 900.
+# `high` here is high_since_entry (only highs seen AFTER entry — step() guarantees
+# this by shadowing day_high). Each row: which post-entry high we've seen and
+# where the price is now → the decision decide() must make.
+def _mp(entry=1000.0, qty=8, sl=900.0):
+    return {"entry": entry, "qty": qty, "sl": sl}
+
+
+def _mcfg():
+    return _cfg(targets=(10.0, 20.0, 30.0), sl_rupees=100.0)
+
+
+@pytest.mark.parametrize("high, price, low, action, why", [
+    # ── nothing reached yet → hold for the first target
+    (1000.0, 1000.0, 1000.0, "hold", "flat at entry"),
+    (1008.0, 1008.0,  998.0, "hold", "climbing, below T1"),
+    # ── T1 reached, still climbing (price above the T1 floor) → hold, ride to T2
+    (1015.0, 1015.0, 1000.0, "hold", "above T1 floor, riding to T2"),
+    # ── T1 reached, price back at/below T1 → sell (book ~+10)
+    (1010.0, 1010.0, 1000.0, "sell", "sitting on the T1 floor"),
+    (1015.0, 1006.0, 1000.0, "sell", "pulled back under T1"),
+    # ── T2 reached, still climbing between T2 and T3 → hold, ride to T3
+    (1025.0, 1025.0, 1000.0, "hold", "above T2 floor, riding to T3"),
+    # ── T2 reached, price back at/below T2 → sell (book ~+20)
+    (1025.0, 1018.0, 1000.0, "sell", "pulled back under T2"),
+    (1020.0, 1020.0, 1000.0, "sell", "sitting on the T2 floor"),
+    # ── top reached, price still at/above top → sell "reached the target"
+    (1030.0, 1030.0, 1000.0, "sell", "at the top target"),
+    (1035.0, 1032.0, 1000.0, "sell", "above the top target"),
+    # ── top reached via the high, price has slipped below it → sell (pulled back)
+    (1030.0, 1020.0, 1000.0, "sell", "top touched then pulled back"),
+    # ── stop takes priority over any target
+    (1030.0,  895.0,  890.0, "exit_sl", "price under the stop"),
+    (1015.0, 1005.0,  899.0, "exit_sl", "day-low pierced the stop"),
+])
+def test_decide_exit_matrix(high, price, low, action, why):
+    d = decide(_mp(), {"price": price, "day_high": high, "day_low": low}, _mcfg())
+    assert d.action == action, f"{why}: expected {action}, got {d.action} — {d.reason}"
+
+
+# Sell sub-type wording, so the message says the right thing (not just "sell").
+@pytest.mark.parametrize("high, price, needle", [
+    (1030.0, 1030.0, "target"),        # reached the top
+    (1030.0, 1020.0, "pulled back"),   # top touched, slipped below
+    (1025.0, 1018.0, "booking"),       # pulled back to the T2 floor
+])
+def test_decide_sell_reason_wording(high, price, needle):
+    d = decide(_mp(), {"price": price, "day_high": high, "day_low": 1000.0}, _mcfg())
+    assert d.action == "sell" and needle in d.reason.lower()
+
+
+# ── Timing: WHEN the high happened, verified through step() (which shadows
+# day_high with high_since_entry). This is the crux of the phantom-sell bug. ──
+def _dry(market):
+    return mc.step("EMCURE", market, None, _mcfg())
+
+
+def test_high_before_entry_is_ignored():
+    """Bought AFTER the day's spike: a session high above the top target that
+    printed BEFORE entry must be ignored — the first cycle holds, not sells."""
+    set_position(1000.0, 8, _mcfg())
+    ev = _dry({"price": 1001.0, "day_high": 1035.0, "day_low": 998.0})   # spike was pre-entry
+    assert "managed_dryrun" not in [e[0] for e in ev]                     # holds
+
+
+def test_high_after_entry_reaches_only_t2_then_pulls_back_sells_at_t2():
+    """Bought BEFORE the day's high; the post-entry high reaches only T2 (not the
+    top), then price pulls back → sell locking the T2 floor, never the top."""
+    set_position(1000.0, 8, _mcfg())
+    hold = _dry({"price": 1025.0, "day_high": 1025.0, "day_low": 1000.0})  # climbs past T2
+    assert "managed_dryrun" not in [e[0] for e in hold]                    # rides toward T3
+    ev = _dry({"price": 1015.0, "day_high": 1015.0, "day_low": 1000.0})    # slips below T2
+    d = [e[1] for e in ev if e[0] == "managed_dryrun"]
+    assert d and d[0]["decision"] == "sell" and "1,020" in d[0]["reason"]  # booked the T2 floor
+
+
+def test_high_after_entry_reaches_only_t1_then_pulls_back_sells_at_t1():
+    set_position(1000.0, 8, _mcfg())
+    _dry({"price": 1015.0, "day_high": 1015.0, "day_low": 1000.0})         # touches T1, rides
+    ev = _dry({"price": 1006.0, "day_high": 1006.0, "day_low": 1000.0})    # slips below T1
+    d = [e[1] for e in ev if e[0] == "managed_dryrun"]
+    assert d and d[0]["decision"] == "sell" and "1,010" in d[0]["reason"]
+
+
+def test_high_after_entry_reaches_top_sells_reached():
+    set_position(1000.0, 8, _mcfg())
+    ev = _dry({"price": 1030.0, "day_high": 1030.0, "day_low": 1000.0})
+    d = [e[1] for e in ev if e[0] == "managed_dryrun"]
+    assert d and d[0]["decision"] == "sell" and "target" in d[0]["reason"].lower()
+
+
+def test_touched_floor_never_given_back_while_price_stays_above():
+    """Once T2 is touched, staying just above it must keep holding (ride up),
+    not churn a sell — the floor only sells on a real pullback through it."""
+    set_position(1000.0, 8, _mcfg())
+    _dry({"price": 1025.0, "day_high": 1025.0, "day_low": 1000.0})         # touch T2
+    ev = _dry({"price": 1022.0, "day_high": 1022.0, "day_low": 1000.0})    # still above T2
+    assert "managed_dryrun" not in [e[0] for e in ev]                      # holds
+
+
+def test_stop_fires_even_after_a_high_was_seen():
+    set_position(1000.0, 8, _mcfg())
+    _dry({"price": 1025.0, "day_high": 1025.0, "day_low": 1000.0})         # saw T2
+    ev = _dry({"price": 895.0, "day_high": 1025.0, "day_low": 890.0})      # then crashed
+    d = [e[1] for e in ev if e[0] == "managed_dryrun"]
+    assert d and d[0]["decision"] == "exit_sl"
+
+
 def test_step_dryrun_adopts_holding_and_announces_no_orders():
     broker = _FakeBroker(held=8, avg=1733.10)
     # price=1764 puts current price above T3 (1763.10) so the post-entry high
