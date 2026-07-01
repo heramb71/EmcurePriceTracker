@@ -208,10 +208,24 @@ ssh -i emcurekey ubuntu@<SERVER_IP>
 curl -fsSL https://raw.githubusercontent.com/heramb71/EmcurePriceTracker/main/deploy/oracle_setup.sh -o setup.sh
 sudo bash setup.sh
 
-# Update after code changes
-cd /opt/emcure && sudo git pull
-sudo systemctl restart emcure-bot emcure-tracker
+# Update after code changes — one command: sync main, refresh deps,
+# reinstall any drifted systemd units, daemon-reload, restart all services.
+sudo bash /opt/emcure/deploy/update.sh
 ```
+
+`deploy/update.sh` is the single deploy entry point (used both by hand and by
+the **Deploy to Oracle Cloud** GitHub Action, which SSHes in and runs the exact
+same script). It discovers every service running from `/opt/emcure` by
+`WorkingDirectory`, so it restarts tracker/bot/radar/crypto without hardcoding
+names, and re-installs a unit file whenever its `ExecStart` drifts (e.g. the
+`apps/` restructure) — which a plain `git pull` would miss. `.env` and runtime
+state (`trade_state.json`, `strategy_state.json`, `radar.db`) are gitignored and
+never touched by the hard reset.
+
+> GitHub Action secrets: `SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY`, `SSH_PORT`
+> (optional). The deploy user needs passwordless `sudo` for `update.sh`. The
+> script must already exist on the server (first-time setup or one manual
+> deploy); thereafter it self-updates when it syncs the repo.
 
 **Key Oracle Cloud gotchas:**
 - iptables REJECT rule is at position 5 — insert ACCEPT rules with `-I INPUT 5`, not `-A`

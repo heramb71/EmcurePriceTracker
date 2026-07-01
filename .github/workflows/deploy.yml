@@ -2,6 +2,12 @@ name: Deploy to Oracle Cloud
 
 # Manual-only — this never deploys automatically. You click "Run workflow",
 # then must select DEPLOY in the confirmation dropdown to proceed.
+#
+# The actual work is done by deploy/update.sh on the server — the exact same
+# script you'd run by hand: sync main, refresh deps, reinstall units, restart
+# every installed emcure-* service. To auto-deploy on merge, add:
+#   push:
+#     branches: [main]
 on:
   workflow_dispatch:
     inputs:
@@ -13,16 +19,6 @@ on:
           - "no"
           - "DEPLOY"
         default: "no"
-      services:
-        description: "Which services to restart"
-        required: true
-        type: choice
-        options:
-          - "all"
-          - "emcure-tracker"
-          - "emcure-bot"
-          - "crypto-tracker"
-        default: "all"
 
 # Never run two deploys at once.
 concurrency:
@@ -42,22 +38,12 @@ jobs:
           echo "::error::Deploy not confirmed — re-run and select 'DEPLOY'."
           exit 1
 
-      - name: Resolve services to restart
-        id: svc
-        run: |
-          if [ "${{ inputs.services }}" = "all" ]; then
-            echo "list=emcure-tracker crypto-tracker emcure-bot" >> "$GITHUB_OUTPUT"
-          else
-            echo "list=${{ inputs.services }}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Deploy over SSH (git pull + restart)
+      - name: Deploy over SSH (runs deploy/update.sh)
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
-          SERVICES: ${{ steps.svc.outputs.list }}
         run: |
           set -euo pipefail
           if [ -z "${SSH_PRIVATE_KEY:-}" ] || [ -z "${SSH_HOST:-}" ] || [ -z "${SSH_USER:-}" ]; then
@@ -71,16 +57,13 @@ jobs:
           chmod 600 ~/.ssh/id_deploy
           ssh-keyscan -p "$PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-          echo "Deploying to $SSH_USER@$SSH_HOST:$PORT — restarting: $SERVICES"
+          echo "Deploying main to $SSH_USER@$SSH_HOST:$PORT via deploy/update.sh"
+          # update.sh must already exist on the server (from a prior deploy or
+          # the first-time setup). It self-updates when it syncs the repo.
           ssh -i ~/.ssh/id_deploy -p "$PORT" \
             -o StrictHostKeyChecking=accept-new \
             "$SSH_USER@$SSH_HOST" \
-            "set -e; \
-             cd /opt/emcure && \
-             sudo git pull --ff-only && \
-             sudo systemctl restart $SERVICES && \
-             sleep 2 && \
-             systemctl is-active $SERVICES"
+            "sudo bash /opt/emcure/deploy/update.sh"
 
       - name: Cleanup key
         if: always()
