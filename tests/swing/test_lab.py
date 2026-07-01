@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.costs import compute_charges
+from src.shared.costs import compute_charges
 from src.swing import indicators as ind
 from src.swing import signals as sig
 from src.swing.backtest import DP_CHARGE, _close

@@ -12,8 +12,8 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-import src.alerts as alerts
-from src.alerts import send_alert, send_whatsapp_alert, should_alert
+import src.notify.alerts as alerts
+from src.notify.alerts import send_alert, send_whatsapp_alert, should_alert
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 

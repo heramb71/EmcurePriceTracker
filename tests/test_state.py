@@ -1,7 +1,7 @@
 """Tests for strategy state transitions (open / partial / close / circuit breaker)."""
 from __future__ import annotations
 
-from src.state import (
+from src.emcure.state import (
     _default_state,
     open_position,
     book_partial,

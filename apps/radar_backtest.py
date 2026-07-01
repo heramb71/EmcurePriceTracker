@@ -10,7 +10,7 @@ expectancy by signal, stock, and regime.
 A round-trip cost haircut is applied to net expectancy because — per the repo's
 own swing-lab finding — cost drag is what kills thin edges.
 
-Run:  python radar_backtest.py [months] [min_adtv_cr]   (default 6 months, 100)
+Run:  python -m apps.radar_backtest [months] [min_adtv_cr]   (default 6 months, 100)
 """
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ from collections import defaultdict
 
 import pandas as pd
 
-from radar_replay import _daily_slice, _intraday, snapshot_at
-from src.data import fetch_daily
+from apps.radar_replay import _daily_slice, _intraday, snapshot_at
+from src.shared.data import fetch_daily
 from src.radar import scoring, signals, tracker
 from src.radar.alert_format import signal_label
 from src.radar.dispatch import AlertGate

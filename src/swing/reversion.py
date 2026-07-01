@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from src.intraday import classify_7d_trend, compute_sma7
+from src.emcure.intraday import classify_7d_trend, compute_sma7
 
 DRASTIC_FALL_FRAC = 0.011   # ~₹15 on EMCURE → fraction of entry
 OVERNIGHT_HOLD_DAYS = 4

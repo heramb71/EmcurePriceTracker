@@ -6,7 +6,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from src.types import ScoreBreakdown, ScoreResult
+from src.shared.types import ScoreBreakdown, ScoreResult
 
 logger = logging.getLogger(__name__)
 

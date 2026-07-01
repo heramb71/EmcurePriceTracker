@@ -34,36 +34,56 @@ tail -f /var/log/emcure/tracker.log
 
 ```
 EmcurePriceTracker/
-├── main.py                  # Interactive dashboard (Rich UI) + alert engine
-├── main_headless.py         # Headless mode for server deployment
-├── bot_server.py            # Flask WhatsApp webhook (BUY/SELL/STATUS/HELP)
-├── trade.py                 # CLI: python trade.py buy/sell/status
-├── start_bot.sh             # Local dev: starts bot_server + ngrok tunnel
-├── emcure_tracker.py        # Legacy entry point
-├── src/
-│   ├── data.py              # yfinance data fetching (daily + intraday)
-│   ├── indicators.py        # RSI, MACD, Bollinger Bands, EMA, ATR, VWAP
-│   ├── pivots.py            # Classic Pivot Points + Camarilla Pivots
-│   ├── intraday.py          # SMA7 gap strategy, ORB, entry signals, rupee targets
-│   ├── predictor.py         # Trade confidence predictor + WhatsApp message formatters
-│   ├── sentiment.py         # FinBERT sentiment (VADER fallback) + Google News RSS
-│   ├── scoring.py           # HMM market regime + combined signal scorer
-│   ├── alerts.py            # Telegram + WhatsApp (Twilio) alert dispatcher
-│   ├── dashboard.py         # Rich terminal UI panels
-│   ├── trade_manager.py     # Manual trade state (T1/T2/T3/SL tracking)
-│   └── news_monitor.py      # Background news polling thread
+├── apps/                     # Entry points — run as modules: python -m apps.<name>
+│   ├── main.py               # Interactive dashboard (Rich UI) + alert engine
+│   ├── main_headless.py      # Headless EMCURE service for server deployment
+│   ├── bot_server.py         # Flask WhatsApp webhook + Telegram command bot
+│   ├── trade.py              # CLI: python -m apps.trade buy/sell/status
+│   ├── crypto_headless.py    # Crypto BTC/ETH tracker service
+│   ├── radar_headless.py     # Multi-stock radar scanner service
+│   ├── radar.py              # Radar CLI (scan-now / outcomes / report)
+│   ├── emcure_tracker.py     # Legacy entry point
+│   └── *_backtest.py, reversion_lab.py, swing_gate.py, send_whatsapp_now.py  # research/CLI tools
+├── src/                      # Library code — organized by feature/domain
+│   ├── shared/               # Cross-feature primitives
+│   │   ├── data.py           #   yfinance data fetching (daily + intraday)
+│   │   ├── indicators.py     #   RSI, MACD, Bollinger, EMA, ATR, VWAP
+│   │   ├── pivots.py         #   Classic + Camarilla pivots
+│   │   ├── holidays.py, costs.py, types.py
+│   ├── notify/               # Alert channels (see "Alert channels" below)
+│   │   ├── alerts.py         #   Telegram + WhatsApp (Twilio) send + formatters
+│   │   ├── channels.py       #   whatsapp_enabled() + per-service telegram_config()
+│   │   └── telegram_bot.py   #   Telegram command long-poller
+│   ├── market_intel/         # sentiment.py (FinBERT/VADER) + news_monitor.py
+│   ├── execution/            # broker.py (Zerodha Kite)
+│   ├── emcure/               # The EMCURE trading engine
+│   │   ├── intraday.py       #   SMA7 gap strategy, ORB, rupee targets
+│   │   ├── managed_cycle.py  #   Managed-cycle auto-trader
+│   │   ├── supertrend.py, strategy.py, scoring.py, predictor.py
+│   │   ├── trade_manager.py  #   Manual trade state (T1/T2/T3/SL)
+│   │   ├── probability.py, backtest.py, events.py, state.py, dashboard.py
+│   ├── radar/                # Multi-stock opportunity radar (read-only scanner)
+│   ├── swing/                # Swing-bot research lab (gated FAIL — do not deploy)
+│   └── crypto/               # Crypto data / signals / messages
 ├── deploy/
-│   ├── oracle_setup.sh      # Full Oracle Cloud deployment script (run once on server)
-│   ├── bot.service          # systemd unit for bot_server.py
-│   ├── nginx.conf           # nginx reverse proxy template
-│   └── deploy.sh            # Legacy DigitalOcean deploy script
-├── trade_state.json         # Runtime trade state — gitignored
-├── strategy_state.json      # Supertrend strategy state — gitignored
-├── requirements-core.txt    # Minimal deps for server (no torch/FinBERT)
-├── requirements.txt         # Full deps including FinBERT
-├── .env                     # Secrets — gitignored
+│   ├── oracle_setup.sh       # Full Oracle Cloud deployment (run once on server)
+│   ├── *.service             # systemd units — ExecStart=python3 -m apps.<name>
+│   ├── nginx.conf            # nginx reverse proxy template
+│   └── deploy.sh             # Legacy DigitalOcean deploy script
+├── scripts/telegram_chat_id.py  # Helper: resolve each bot's chat id
+├── trade_state.json          # Runtime trade state — gitignored
+├── strategy_state.json       # Supertrend strategy state — gitignored
+├── requirements-core.txt     # Minimal deps for server (no torch/FinBERT)
+├── requirements.txt          # Full deps including FinBERT
+├── .env                      # Secrets — gitignored
 └── .env.example
 ```
+
+> **Import layout:** entry points live in `apps/` and are launched as modules
+> (`python -m apps.main_headless`) so the repo root is on `sys.path` and
+> `import src.*` resolves. Library code imports absolutely from its feature
+> package, e.g. `from src.shared.data import fetch_daily`,
+> `from src.notify.alerts import send_alert`, `from src.emcure.managed_cycle import step`.
 
 ---
 
@@ -147,12 +167,12 @@ MANAGED_REENTRY_COOLDOWN_MIN=60   # min minutes between an exit and the next ent
 MANAGED_BLOCK_REENTRY_AFTER_STOP=true  # no re-entry the same day after a stop-out
 ```
 
-**Alert channels** — resolved centrally in `src/channels.py`:
+**Alert channels** — resolved centrally in `src/notify/channels.py`:
 - **Telegram is primary.** Each service owns a dedicated bot so the three feeds stay separate:
   `emcure` (main_headless + bot_server commands), `radar` (radar_headless), `crypto` (crypto_headless).
   Per-service `TELEGRAM_<SERVICE>_TOKEN` / `_CHAT_ID` override the shared `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID`;
   any blank value falls back to the shared bot, so a single-bot setup still works unchanged.
-  (Telegram is periodically govt-blocked in India — `src/alerts.py` has a circuit breaker.)
+  (Telegram is periodically govt-blocked in India — `src/notify/alerts.py` has a circuit breaker.)
 - **WhatsApp** is an **opt-in fan-out**, off by default. Set `WHATSAPP_ENABLED=true` (plus Twilio creds)
   to additionally mirror every alert to WhatsApp (50/day trial cap; over-limit sends silently fail).
 
@@ -161,16 +181,16 @@ MANAGED_BLOCK_REENTRY_AFTER_STOP=true  # no re-entry the same day after a stop-o
 ## Running Locally
 
 ```bash
-# Full interactive dashboard
-python main.py
+# Full interactive dashboard  (run entry points as modules from the repo root)
+python -m apps.main
 
 # Headless (alerts only, no Rich UI)
-HEADLESS=true python main.py
+HEADLESS=true python -m apps.main_headless
 
 # CLI trade management
-python trade.py buy 1693
-python trade.py sell
-python trade.py status
+python -m apps.trade buy 1693
+python -m apps.trade sell
+python -m apps.trade status
 
 # WhatsApp bot (local dev with ngrok)
 ./start_bot.sh
@@ -201,7 +221,7 @@ sudo systemctl restart emcure-bot emcure-tracker
 
 ---
 
-## NSE Trade Opportunity Radar (`src/radar/`, `radar_headless.py`, `radar.py`)
+## NSE Trade Opportunity Radar (`src/radar/`, `apps/radar_headless.py`, `apps/radar.py`)
 
 A **separate, read-only** multi-stock scanner — fully isolated from the live
 EMCURE trading engine and the crypto service. It scans a 12-stock universe
@@ -218,7 +238,7 @@ signal's forward outcome to measure edge. **It never places trades.**
 
 **Modules:**
 - `universe.py` — 12 symbols + ADTV ≥ ₹100 Cr liquidity gate
-- `features.py` — scalar per-stock snapshot (reuses `src/data.py` + `src/indicators.py`)
+- `features.py` — scalar per-stock snapshot (reuses `src/shared/data.py` + `src/shared/indicators.py`)
 - `regime.py` — NIFTY regime: 50-DMA slope + ADX(14) + universe breadth → TRENDING_BULL/BEAR/SIDEWAYS
 - `signals.py` — 5 detectors: SMA7 reversion, VWAP pullback, RVOL reversal, ATR breakout, gap reversion
 - `scoring.py` — 0–100 confidence (RVOL/SMA7/VWAP/ATR/RSI/RS/regime), `SCORE_GATE=75`
@@ -234,10 +254,10 @@ server, OCI-free-tier friendly. The radar is the sole writer.
 
 **Run:**
 ```bash
-python radar.py scan-now      # one scan, ranked table (no alerts/writes)
-python radar.py outcomes      # force a matured-outcome sweep
-python radar.py report        # analytics dashboard
-python radar_headless.py      # the service (market-aware loop)
+python -m apps.radar scan-now      # one scan, ranked table (no alerts/writes)
+python -m apps.radar outcomes      # force a matured-outcome sweep
+python -m apps.radar report        # analytics dashboard
+python -m apps.radar_headless      # the service (market-aware loop)
 ```
 
 **Deploy (separate service, leaves emcure-tracker/emcure-bot untouched):**
@@ -249,7 +269,7 @@ tail -f /var/log/emcure/radar.log
 
 Config lives under the `RADAR_*` keys in `.env` (see `.env.example`). Telegram
 only — uses the `radar` bot (`TELEGRAM_RADAR_TOKEN` / `TELEGRAM_RADAR_CHAT_ID`,
-falling back to the shared `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID`). See `src/channels.py`.
+falling back to the shared `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID`). See `src/notify/channels.py`.
 
 **End-of-day summaries:** after market close on each trading day the radar sends
 one per-stock EOD summary (OHLC, RSI/MACD/regime, tomorrow's SMA7 reversion watch
@@ -262,7 +282,7 @@ validated outside EMCURE).
 
 ---
 
-## src/trade_manager.py
+## src/emcure/trade_manager.py
 
 Manual trade state persistence for T1/T2/T3/SL alert monitoring.
 
@@ -282,7 +302,7 @@ format_target_alert(ticker: str, hit: dict, current_price: float) -> str
 
 ---
 
-## src/predictor.py — Message Formatters
+## src/emcure/predictor.py — Message Formatters
 
 ```python
 format_pre_open_briefing(...)   # 9:00 AM briefing
@@ -295,9 +315,10 @@ format_confidence_line(...)     # Single-line dashboard embed
 
 ## Coding Conventions
 
-- Follow `src/` module boundaries — no cross-imports except via `main.py`
+- Organize `src/` by feature/domain: `shared`, `notify`, `market_intel`, `execution`, `emcure`, `radar`, `swing`, `crypto`. Cross-feature code belongs in `shared`.
+- Entry points live in `apps/` and import library code absolutely (`from src.<feature>.<module> import ...`); run them as modules (`python -m apps.<name>`).
 - All indicator functions are pure — take Series/DataFrame, return scalar or dict
 - All network calls return `None`/empty on failure — never raise to caller
 - Files: max 400 lines. Functions: max 50 lines
-- No hardcoded prices or symbols outside `main.py` config block
+- No hardcoded prices or symbols outside the `apps/main.py` config block
 - `trade_state.json` and `strategy_state.json` are runtime state — never commit

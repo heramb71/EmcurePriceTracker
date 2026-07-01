@@ -42,7 +42,7 @@ def to_yf(symbol: str) -> str:
 def adtv_cr(df_daily: pd.DataFrame, lookback: int = LIQUIDITY_LOOKBACK) -> float:
     """Average daily traded value (₹ crore) over the trailing ``lookback`` bars.
 
-    Operates on the live lowercase-column daily frame from ``src.data``.
+    Operates on the live lowercase-column daily frame from ``src.shared.data``.
     """
     if df_daily is None or df_daily.empty:
         return 0.0

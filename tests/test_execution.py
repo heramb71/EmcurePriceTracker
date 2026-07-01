@@ -1,8 +1,8 @@
 """Tests for confirm-fill-then-record execution path (critical-path safety)."""
 from __future__ import annotations
 
-import main
-from src.state import _default_state
+from apps import main
+from src.emcure.state import _default_state
 
 
 _QUOTE  = {"price": 1700.0, "volume": 100000}

@@ -8,7 +8,7 @@ Receives inbound WhatsApp messages via Twilio webhook and processes:
   STATUS             — live P&L + level progress
   HELP               — command list
 
-Run via:  python bot_server.py
+Run via:  python -m apps.bot_server
 Or use:   ./start_bot.sh   (starts bot + ngrok tunnel together)
 """
 from __future__ import annotations
@@ -27,9 +27,9 @@ from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from src.trade_manager import set_trade, clear_trade, get_trade, current_pnl
-from src.state import load_state
-from src import channels
+from src.emcure.trade_manager import set_trade, clear_trade, get_trade, current_pnl
+from src.emcure.state import load_state
+from src.notify import channels
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
@@ -123,7 +123,7 @@ def _handle_status(parts: list[str]) -> str:
         # stale, already-sold position. Report the managed cycle's own state
         # (its file is cleared atomically on every exit) so STATUS reflects the
         # live session.
-        from src.managed_cycle import get_position as managed_position
+        from src.emcure.managed_cycle import get_position as managed_position
         pos = managed_position()
         if pos:
             entry   = float(pos["entry"])
@@ -215,7 +215,7 @@ def _handle_help(parts: list[str]) -> str:
 
 def _handle_kite(parts: list[str]) -> str:
     """Report whether Kite auto-trading will execute today."""
-    from src.broker import kite_execution_status
+    from src.execution.broker import kite_execution_status
     result = kite_execution_status()
     lines = [result["summary"], ""]
     tick = {True: "✅", False: "❌"}
@@ -228,9 +228,9 @@ def _handle_crypto(parts: list[str]) -> str:
     """On-demand BTC/ETH summary (same read as the 8 AM / 8 PM briefings)."""
     try:
         from datetime import datetime, timezone, timedelta
-        from crypto.data import fetch_crypto_daily, fetch_crypto_quote, fetch_usd_inr
-        from crypto.signals import compute_crypto_signal
-        from crypto.messages import format_evening_summary
+        from src.crypto.data import fetch_crypto_daily, fetch_crypto_quote, fetch_usd_inr
+        from src.crypto.signals import compute_crypto_signal
+        from src.crypto.messages import format_evening_summary
 
         ist = timezone(timedelta(hours=5, minutes=30))
         usd = fetch_usd_inr()
@@ -264,7 +264,7 @@ def _handle_token(parts: list[str]) -> str:
             "4. Send: TOKEN <that_token>"
         )
     try:
-        from src.broker import KiteBroker
+        from src.execution.broker import KiteBroker
         broker = KiteBroker(KITE_API_KEY, KITE_API_SECRET)
         if broker.complete_auth(parts[1].strip()):
             return "✅ Kite authenticated — auto-trading active for today."
@@ -316,7 +316,7 @@ def whatsapp():
     # deliver reliably. TwiML webhook responses were silently not delivered in
     # the sandbox, so we send the reply directly and ack the webhook with 204.
     if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_WHATSAPP_FROM:
-        from src.alerts import send_whatsapp_alert
+        from src.notify.alerts import send_whatsapp_alert
         if send_whatsapp_alert(
             TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM, from_num, reply
         ):
@@ -345,7 +345,7 @@ def kite_callback():
         return "<h2>KITE_API_KEY/SECRET not configured on server.</h2>", 500
 
     try:
-        from src.broker import KiteBroker
+        from src.execution.broker import KiteBroker
         broker = KiteBroker(KITE_API_KEY, KITE_API_SECRET)
         if broker.complete_auth(request_token):
             wa_sid  = os.getenv("TWILIO_ACCOUNT_SID", "")
@@ -353,7 +353,7 @@ def kite_callback():
             wa_from = os.getenv("TWILIO_WHATSAPP_FROM", "")
             wa_to   = os.getenv("TWILIO_WHATSAPP_TO", "")
             if all([wa_sid, wa_tok, wa_from, wa_to]):
-                from src.alerts import send_whatsapp_alert
+                from src.notify.alerts import send_whatsapp_alert
                 send_whatsapp_alert(wa_sid, wa_tok, wa_from, wa_to,
                     f"✅ Kite authenticated — auto-trading ACTIVE for today.")
             return "<h2>✅ Kite authenticated. Auto-trading is active. You can close this tab.</h2>"
@@ -398,7 +398,7 @@ def _start_telegram_bot() -> None:
     if not TELEGRAM_TOKEN:
         return
     import threading
-    from src.telegram_bot import run_command_bot
+    from src.notify.telegram_bot import run_command_bot
 
     t = threading.Thread(
         target=run_command_bot,

@@ -11,8 +11,8 @@ from datetime import datetime
 
 import pytest
 
-import main_headless
-from main_headless import _next_wake_target, _IST
+from apps import main_headless
+from apps.main_headless import _next_wake_target, _IST
 
 
 def _ist(y: int, m: int, d: int, hh: int, mm: int) -> datetime:

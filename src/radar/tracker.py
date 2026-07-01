@@ -7,7 +7,7 @@ NEUTRAL = neither. All hits are long (the universe is traded long).
 
 The window-evaluation core is a pure function (testable with synthetic bars,
 mirroring ``tests/swing/test_reversion.py`` hit-order discipline); the rest just
-fetches bars via ``src.data`` and writes results via ``src.radar.store``.
+fetches bars via ``src.shared.data`` and writes results via ``src.radar.store``.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from typing import Callable, Optional
 
 import pandas as pd
 
-from src.data import fetch_daily, fetch_intraday
+from src.shared.data import fetch_daily, fetch_intraday
 from src.radar import store
 
 logger = logging.getLogger(__name__)

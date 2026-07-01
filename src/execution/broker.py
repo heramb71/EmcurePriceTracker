@@ -507,7 +507,7 @@ def kite_execution_status(today: date | None = None) -> dict:
 
     # 4. NSE holiday check
     try:
-        from src.holidays import is_market_holiday, get_holiday_name
+        from src.shared.holidays import is_market_holiday, get_holiday_name
         is_holiday = is_market_holiday(today)
     except Exception:
         is_holiday = False

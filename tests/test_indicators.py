@@ -107,7 +107,7 @@ def test_compute_atr_ignores_trailing_nan_row():
     """yfinance's pre-market all-NaN 'today' row must not zero out ATR."""
     import numpy as np
     import pandas as pd
-    from src.indicators import compute_atr
+    from src.shared.indicators import compute_atr
     rows = [{"high": 100 + i, "low": 90 + i, "close": 95 + i} for i in range(30)]
     rows.append({"high": np.nan, "low": np.nan, "close": np.nan})   # today's placeholder
     atr = compute_atr(pd.DataFrame(rows))

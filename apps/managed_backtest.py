@@ -1,7 +1,7 @@
 """
 Throwaway backtest: replay the live managed-cycle auto-trader over the last
 ~6 months of EMCURE daily bars, reusing the REAL decision logic
-(src.managed_cycle.decide) and the REAL CNC cost model (src.costs).
+(src.emcure.managed_cycle.decide) and the REAL CNC cost model (src.shared.costs).
 
 Daily-bar approximation (yfinance only serves ~60d of intraday):
   - SMA7 reference = mean of the previous 7 daily closes (no look-ahead).
@@ -13,7 +13,7 @@ Daily-bar approximation (yfinance only serves ~60d of intraday):
                     floor across overnight gaps — the floor's intent)
         day_low   = that day's low
     Stop is checked on the day's low (capital-protection-first, like live).
-  - Costs: real Zerodha CNC delivery charges via src.costs.
+  - Costs: real Zerodha CNC delivery charges via src.shared.costs.
 """
 from __future__ import annotations
 
@@ -21,10 +21,10 @@ import sys
 import numpy as np
 import pandas as pd
 
-from src.data import fetch_daily
-from src.managed_cycle import ManagedConfig, decide
-from src.costs import net_pnl
-from src.intraday import classify_7d_trend
+from src.shared.data import fetch_daily
+from src.emcure.managed_cycle import ManagedConfig, decide
+from src.shared.costs import net_pnl
+from src.emcure.intraday import classify_7d_trend
 
 # Strategy params — match the live managed-cycle (server .env / defaults).
 TARGETS = (15.0, 20.0, 30.0)

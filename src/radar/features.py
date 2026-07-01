@@ -1,8 +1,8 @@
 """Per-stock scalar feature snapshot for the radar.
 
-Pulls daily + intraday bars via ``src.data`` and reduces them to the last-bar
+Pulls daily + intraday bars via ``src.shared.data`` and reduces them to the last-bar
 scalars the signal detectors and scorer need. All indicator math reuses the live
-``src.indicators`` stack (lowercase-column frames). Returns ``None`` on any data
+``src.shared.indicators`` stack (lowercase-column frames). Returns ``None`` on any data
 failure — never raises to the scan loop.
 """
 from __future__ import annotations
@@ -13,8 +13,8 @@ from typing import Optional
 
 import pandas as pd
 
-from src.data import _download_with_retry, _normalise, fetch_daily, fetch_intraday
-from src.indicators import (
+from src.shared.data import _download_with_retry, _normalise, fetch_daily, fetch_intraday
+from src.shared.indicators import (
     compute_atr,
     compute_avg_volume,
     compute_ema,
@@ -22,7 +22,7 @@ from src.indicators import (
     compute_rsi,
     compute_vwap,
 )
-from src.intraday import compute_sma7
+from src.emcure.intraday import compute_sma7
 from src.radar.universe import adtv_cr
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ class StockFeatures:
 def fetch_index_daily(symbol: str = "^NSEI", days: int = 120) -> Optional[pd.DataFrame]:
     """Daily bars for an index ticker (keeps the ``^`` prefix — no ``.NS``).
 
-    Reuses ``src.data`` download/normalise helpers so retry/cleanup behaviour
+    Reuses ``src.shared.data`` download/normalise helpers so retry/cleanup behaviour
     matches the rest of the system.
     """
     raw = _download_with_retry(symbol, period=f"{days}d", interval="1d")

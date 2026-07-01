@@ -5,7 +5,7 @@ Discipline baked in to avoid the look-ahead bugs that produced the discarded
   - signal is computed on bar t (close); entry fills at bar t+1 OPEN
   - only ONE position is ever open across the whole universe
   - intrabar stop/target use bar Low/High; everything else fills at close
-  - every trade nets Zerodha CNC charges (src.costs) + a CDSL DP sell charge
+  - every trade nets Zerodha CNC charges (src.shared.costs) + a CDSL DP sell charge
 
 Returns a BacktestResult with the full §6 metric set.
 """
@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from src.costs import compute_charges
+from src.shared.costs import compute_charges
 
 from . import indicators as ind
 from . import signals as sig

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from src import channels
+from src.notify import channels
 
 # Every env var the module reads, cleared before each test for isolation.
 _ENV_KEYS = [

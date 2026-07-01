@@ -6,7 +6,7 @@ Intraday hit-order is estimated by proximity to open price.
 Overnight holds (drastic falls) look forward up to 4 days for NPLP recovery.
 
 Usage:
-    from src.backtest import run_backtest, print_report
+    from src.emcure.backtest import run_backtest, print_report
     result = run_backtest(df_daily, capital=100_000, risk_rupees=4500)
     print_report(result)
 """
@@ -19,7 +19,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from src.intraday import classify_7d_trend, compute_sma7_gap
+from src.emcure.intraday import classify_7d_trend, compute_sma7_gap
 
 logger = logging.getLogger(__name__)
 

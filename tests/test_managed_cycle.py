@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-import src.managed_cycle as mc
-from src.managed_cycle import ManagedConfig, choose_target, decide, format_levels_block
-from src.predictor import format_pre_open_briefing
+import src.emcure.managed_cycle as mc
+from src.emcure.managed_cycle import ManagedConfig, choose_target, decide, format_levels_block
+from src.emcure.predictor import format_pre_open_briefing
 
 
 def _cfg(**over) -> ManagedConfig:
@@ -203,7 +203,7 @@ def test_levels_block_includes_reach_odds_and_chosen_target():
 # ── Phase 2 safety guards: kill-switch, cooldown, stop-out, external close ────
 
 from datetime import datetime, timedelta, timezone
-from src.managed_cycle import reentry_blocked, set_position, get_position
+from src.emcure.managed_cycle import reentry_blocked, set_position, get_position
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 _NOW = datetime(2026, 6, 18, 11, 0, tzinfo=_IST)

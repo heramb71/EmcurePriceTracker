@@ -30,7 +30,7 @@ load_dotenv()
 import pandas as pd
 import yfinance as yf
 
-from src.backtest import run_backtest, print_report, format_whatsapp_report
+from src.emcure.backtest import run_backtest, print_report, format_whatsapp_report
 
 
 def _fetch(ticker: str) -> pd.DataFrame:
@@ -57,7 +57,7 @@ def _send_whatsapp(report: str) -> None:
         print("\n  [WhatsApp] Missing Twilio credentials — skipping send.")
         return
 
-    from src.alerts import send_whatsapp_alert
+    from src.notify.alerts import send_whatsapp_alert
     ok = send_whatsapp_alert(sid, token, from_, to, report)
     if ok:
         print("\n  ✅ Backtest report sent via WhatsApp")

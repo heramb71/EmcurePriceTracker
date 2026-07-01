@@ -14,7 +14,7 @@ from typing import Callable
 
 import requests
 
-from src.alerts import send_alert
+from src.notify.alerts import send_alert
 
 logger = logging.getLogger(__name__)
 

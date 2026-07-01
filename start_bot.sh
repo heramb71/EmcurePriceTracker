@@ -31,7 +31,7 @@ fi
 # ── Start bot server ─────────────────────────────────────────────────────────
 echo ""
 echo "🤖 Starting WhatsApp Trade Bot on port $BOT_PORT..."
-python bot_server.py &
+python -m apps.bot_server &
 BOT_PID=$!
 
 sleep 2

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.probability import touch_probabilities
+from src.emcure.probability import touch_probabilities
 
 
 def _df(n: int, close: float, up_pct: float, dn_pct: float) -> pd.DataFrame:
@@ -50,7 +50,7 @@ def test_targets_are_monotonic_non_increasing():
 
 
 def test_daily_reach_probs_dynamic_from_current_price():
-    from src.probability import daily_reach_probs
+    from src.emcure.probability import daily_reach_probs
     df = _df(60, 1000.0, up_pct=0.03, dn_pct=0.02)   # +3% high, −2% low daily
     p = daily_reach_probs(df, 1000.0, [1020.0, 1040.0], down_level=980.0)
     assert p[1020.0] == 100      # +2% within the +3% daily up-move
@@ -59,7 +59,7 @@ def test_daily_reach_probs_dynamic_from_current_price():
 
 
 def test_daily_reach_probs_rises_as_price_approaches_target():
-    from src.probability import daily_reach_probs
+    from src.emcure.probability import daily_reach_probs
     df = _df(60, 1000.0, up_pct=0.03, dn_pct=0.02)
     far  = daily_reach_probs(df, 1000.0, [1040.0])    # needs +4% → unreachable
     near = daily_reach_probs(df, 1025.0, [1040.0])    # needs +1.5% → reachable

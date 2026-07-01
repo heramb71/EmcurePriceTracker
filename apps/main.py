@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Emcure Pharmaceuticals — Intraday Swing Trader Dashboard
-Run: python main.py
-     TICKER=RELIANCE python main.py
+Run: python -m apps.main
+     TICKER=RELIANCE python -m apps.main
 """
 
 # Must be set before any sklearn/joblib import to prevent loky multiprocessing
@@ -26,7 +26,7 @@ from rich.live import Live
 
 load_dotenv()
 
-from src import channels
+from src.notify import channels
 
 TICKER              = os.getenv("TICKER", "EMCURE")
 REFRESH_SECONDS     = int(os.getenv("REFRESH_SECONDS", "300"))
@@ -51,8 +51,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
-from src.data       import fetch_daily, fetch_intraday, get_latest_quote, fetch_live_quote
-from src.intraday   import (
+from src.shared.data       import fetch_daily, fetch_intraday, get_latest_quote, fetch_live_quote
+from src.emcure.intraday   import (
     compute_sma7_gap,
     classify_7d_trend,
     compute_orb,
@@ -60,15 +60,15 @@ from src.intraday   import (
     rupee_targets,
     time_exit_action,
 )
-from src.news_monitor import NewsMonitor
-from src.holidays import is_market_holiday, format_holiday_alert
-from src.predictor   import (
+from src.market_intel.news_monitor import NewsMonitor
+from src.shared.holidays import is_market_holiday, format_holiday_alert
+from src.emcure.predictor   import (
     predict_trade,
     format_pre_open_briefing,
     format_post_open_briefing,
     format_eod_summary,
 )
-from src.indicators import (
+from src.shared.indicators import (
     compute_rsi,
     compute_macd,
     compute_bollinger,
@@ -77,16 +77,16 @@ from src.indicators import (
     compute_vwap,
     compute_avg_volume,
 )
-from src.pivots import classic_pivots, camarilla_pivots, atr_levels
-from src.sentiment import load_sentiment_model, fetch_news, aggregate_sentiment
-from src.scoring import (
+from src.shared.pivots import classic_pivots, camarilla_pivots, atr_levels
+from src.market_intel.sentiment import load_sentiment_model, fetch_news, aggregate_sentiment
+from src.emcure.scoring import (
     detect_regime,
     compute_score,
     compute_ml_target_probabilities,
     compute_intraday_probabilities,
 )
-from src.trade_manager import check_and_mark, format_target_alert
-from src.alerts import (
+from src.emcure.trade_manager import check_and_mark, format_target_alert
+from src.notify.alerts import (
     send_alert,
     send_whatsapp_alert,
     format_alert,
@@ -96,15 +96,15 @@ from src.alerts import (
     format_partial_alert,
     format_position_close_alert,
 )
-from src.dashboard import build_dashboard
-from src.supertrend import compute_supertrend
-from src.strategy import (
+from src.emcure.dashboard import build_dashboard
+from src.emcure.supertrend import compute_supertrend
+from src.emcure.strategy import (
     check_buy_gate,
     compute_position_size,
     manage_position,
     unrealised_pnl,
 )
-from src.state import (
+from src.emcure.state import (
     load_state,
     save_state,
     reset_session_if_new_day,
@@ -114,9 +114,9 @@ from src.state import (
     check_circuit_breaker,
     PARTIAL_DENOM,
 )
-from src.events import is_near_event
-from src.managed_cycle import ManagedConfig, step as managed_step, get_position as managed_get_position
-from src.probability import daily_reach_probs
+from src.emcure.events import is_near_event
+from src.emcure.managed_cycle import ManagedConfig, step as managed_step, get_position as managed_get_position
+from src.emcure.probability import daily_reach_probs
 
 logger = logging.getLogger(__name__)
 
@@ -597,7 +597,7 @@ def main() -> None:
                 if eod_key not in last_alerted:
                     q   = data.get("quote", {})
                     s7  = data.get("sma7_gap", {})
-                    from src.trade_manager import get_trade
+                    from src.emcure.trade_manager import get_trade
                     active = get_trade()
                     eod_msg = format_eod_summary(
                         ticker        = TICKER,

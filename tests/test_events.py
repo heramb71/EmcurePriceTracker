@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from datetime import date
 
-import src.events as events
-from src.events import is_near_event
+import src.emcure.events as events
+from src.emcure.events import is_near_event
 
 
 def setup_function():

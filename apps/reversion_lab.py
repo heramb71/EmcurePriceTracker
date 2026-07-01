@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from src.backtest import run_backtest
+from src.emcure.backtest import run_backtest
 from src.swing.reversion import Params, run, stats
 from src.swing.universe import SYMBOLS, to_yf
 

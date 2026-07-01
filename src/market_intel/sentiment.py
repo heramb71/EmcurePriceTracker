@@ -4,7 +4,7 @@ import logging
 
 import feedparser
 
-from src.types import Article, SentimentResult
+from src.shared.types import Article, SentimentResult
 
 logger = logging.getLogger(__name__)
 

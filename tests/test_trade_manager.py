@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-import src.trade_manager as tm
+import src.emcure.trade_manager as tm
 
 
 @pytest.fixture(autouse=True)

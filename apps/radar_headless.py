@@ -6,7 +6,7 @@ matured outcomes each cycle. Fully isolated from the live trading engine: it
 imports only generic data/indicator/alert helpers, never the trading or crypto
 code, and never places an order.
 
-Run:  python radar_headless.py
+Run:  python -m apps.radar_headless
 """
 from __future__ import annotations
 
@@ -18,9 +18,9 @@ from datetime import datetime, time as dtime, timedelta, timezone
 
 from dotenv import load_dotenv
 
-from src.alerts import send_alert
-from src import channels
-from src.holidays import is_market_holiday
+from src.notify.alerts import send_alert
+from src.notify import channels
+from src.shared.holidays import is_market_holiday
 from src.radar import analytics, scan, scoring, store, tracker
 from src.radar.alert_format import format_digest, format_eod_stock, format_opportunity
 from src.radar.dispatch import AlertGate

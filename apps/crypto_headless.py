@@ -40,15 +40,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from src.alerts import send_whatsapp_alert, send_alert
-from src import channels
-from crypto.data import fetch_crypto_daily, fetch_crypto_quote, fetch_usd_inr
-from crypto.messages import (
+from src.notify.alerts import send_whatsapp_alert, send_alert
+from src.notify import channels
+from src.crypto.data import fetch_crypto_daily, fetch_crypto_quote, fetch_usd_inr
+from src.crypto.messages import (
     format_evening_summary,
     format_morning_briefing,
     format_signal_alert,
 )
-from crypto.signals import compute_crypto_signal, is_alert_worthy
+from src.crypto.signals import compute_crypto_signal, is_alert_worthy
 
 logging.basicConfig(
     level=logging.INFO,

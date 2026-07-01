@@ -1,7 +1,7 @@
 """Tests for the Supertrend strategy pure functions (sizing + management)."""
 from __future__ import annotations
 
-from src.strategy import (
+from src.emcure.strategy import (
     check_buy_gate,
     compute_position_size,
     manage_position,

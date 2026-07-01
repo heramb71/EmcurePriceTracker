@@ -27,7 +27,7 @@ from typing import Optional
 
 import pandas as pd
 
-from src.indicators import (
+from src.shared.indicators import (
     compute_atr,
     compute_avg_volume,
     compute_bollinger,
@@ -108,10 +108,10 @@ def compute_crypto_signal(df_daily: pd.DataFrame, quote: dict) -> dict:
     Parameters
     ----------
     df_daily : DataFrame
-        Normalised daily data from crypto.data.fetch_crypto_daily.
+        Normalised daily data from src.crypto.data.fetch_crypto_daily.
         Must have columns: date, open, high, low, close, volume.
     quote : dict
-        Live quote dict from crypto.data.fetch_crypto_quote.
+        Live quote dict from src.crypto.data.fetch_crypto_quote.
 
     Returns
     -------

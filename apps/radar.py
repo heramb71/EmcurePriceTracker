@@ -1,9 +1,9 @@
 """Radar CLI — manual ops + verification.
 
 Usage:
-    python radar.py scan-now    # one scan, print ranked table (no alerts/writes)
-    python radar.py outcomes     # force a matured-outcome sweep now
-    python radar.py report        # print the analytics dashboard
+    python -m apps.radar scan-now    # one scan, print ranked table (no alerts/writes)
+    python -m apps.radar outcomes     # force a matured-outcome sweep now
+    python -m apps.radar report        # print the analytics dashboard
 """
 from __future__ import annotations
 

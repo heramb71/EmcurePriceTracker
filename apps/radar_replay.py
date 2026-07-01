@@ -8,7 +8,7 @@ scoring → gate) and, for gated hits, evaluates the realized forward path over 
 remaining available bars (target-vs-stop, MFE/MAE).
 
 Not wired into the service; a manual review tool. Run:
-    python radar_replay.py [num_days] [min_adtv_cr]
+    python -m apps.radar_replay [num_days] [min_adtv_cr]
 """
 from __future__ import annotations
 
@@ -17,9 +17,9 @@ from datetime import datetime
 
 import pandas as pd
 
-from src.data import fetch_daily, fetch_intraday
-from src.indicators import compute_atr, compute_avg_volume, compute_ema, compute_rsi
-from src.intraday import compute_sma7
+from src.shared.data import fetch_daily, fetch_intraday
+from src.shared.indicators import compute_atr, compute_avg_volume, compute_ema, compute_rsi
+from src.emcure.intraday import compute_sma7
 from src.radar import scoring, signals, tracker
 from src.radar.alert_format import signal_label
 from src.radar.scan import _core_symbols

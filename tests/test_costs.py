@@ -1,7 +1,7 @@
 """Tests for the Zerodha CNC transaction cost model."""
 from __future__ import annotations
 
-from src.costs import compute_charges, net_pnl
+from src.shared.costs import compute_charges, net_pnl
 
 
 def test_charges_positive_and_bounded():

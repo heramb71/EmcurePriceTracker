@@ -296,7 +296,7 @@ def reentry_blocked(cfg: ManagedConfig, now: datetime) -> Optional[str]:
 
 def _broker_avg_price(broker, ticker: str) -> float:
     """Average buy price of the live broker holding (delivery), or 0.0."""
-    from src.broker import _nse_symbol
+    from src.execution.broker import _nse_symbol
     symbol = _nse_symbol(ticker)
     try:
         for h in broker.kite.holdings():
@@ -348,7 +348,7 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
     # Dynamic reach-probabilities from the CURRENT price (7/14/30-day moves) so the
     # target picker promotes higher targets only as they actually become likely.
     if position and df_daily is not None and "target_probs" not in market:
-        from src.probability import daily_reach_probs
+        from src.emcure.probability import daily_reach_probs
         up_levels = [round(float(position["entry"]) + d, 2) for d in cfg.targets]
         market = {**market, "target_probs": daily_reach_probs(df_daily, float(market.get("price", 0) or 0), up_levels)}
 

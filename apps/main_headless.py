@@ -43,11 +43,11 @@ def _warn_if_env_world_readable() -> None:
         pass
 
 
-from src.sentiment import load_sentiment_model
-from src.holidays import is_market_holiday, format_holiday_alert
-from src.broker import KiteBroker
-from src import channels
-from src.alerts import (
+from src.market_intel.sentiment import load_sentiment_model
+from src.shared.holidays import is_market_holiday, format_holiday_alert
+from src.execution.broker import KiteBroker
+from src.notify import channels
+from src.notify.alerts import (
     send_alert,
     send_whatsapp_alert,
     format_alert,
@@ -56,14 +56,14 @@ from src.alerts import (
     format_partial_alert,
     format_position_close_alert,
 )
-from src.predictor import (
+from src.emcure.predictor import (
     format_pre_open_briefing,
     format_post_open_briefing,
     format_eod_summary,
 )
-from src.trade_manager import check_and_mark, format_target_alert
-from src.state import load_state, save_state
-from main import _refresh
+from src.emcure.trade_manager import check_and_mark, format_target_alert
+from src.emcure.state import load_state, save_state
+from apps.main import _refresh
 
 logging.basicConfig(
     level=logging.INFO,
@@ -208,7 +208,7 @@ def _dispatch_alerts(
     # show (targets, stop, re-entry) matches what the cycle actually trades.
     managed_block = None
     if managed_active:
-        from src.managed_cycle import ManagedConfig, get_position, format_levels_block
+        from src.emcure.managed_cycle import ManagedConfig, get_position, format_levels_block
         _mc_cfg = ManagedConfig.from_env()
         _mc_sma7 = float((data.get("sma7_gap") or {}).get("sma7", 0) or 0)
         managed_block = format_levels_block(
@@ -308,7 +308,7 @@ def _dispatch_alerts(
                 )
                 logger.warning("AUTO-TRADE BUY skipped — near earnings event")
             elif event_type.startswith("managed_"):
-                from src.managed_cycle import format_managed_event
+                from src.emcure.managed_cycle import format_managed_event
                 msg = format_managed_event(ticker, event_type, payload)
                 if msg is None:
                     continue

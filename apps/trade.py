@@ -3,13 +3,13 @@
 Manual trade CLI.
 
 Usage:
-  python trade.py buy 1693          # record entry at ₹1693 (qty auto from CAPITAL)
-  python trade.py buy 1693 60       # record entry at ₹1693, qty 60
-  python trade.py sell              # close the trade
-  python trade.py status            # show live P&L
-  python trade.py holding           # read-only: show live Zerodha delivery
+  python -m apps.trade buy 1693          # record entry at ₹1693 (qty auto from CAPITAL)
+  python -m apps.trade buy 1693 60       # record entry at ₹1693, qty 60
+  python -m apps.trade sell              # close the trade
+  python -m apps.trade status            # show live P&L
+  python -m apps.trade holding           # read-only: show live Zerodha delivery
                                     # holding (qty + avg buy price) + levels
-  python trade.py track 1304 8 1265 1330 1356 1382
+  python -m apps.trade track 1304 8 1265 1330 1356 1382
                                     # track a position with EXPLICIT levels:
                                     # entry qty sl t1 t2 t3 (for delivery/swing)
 """
@@ -22,7 +22,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 from dotenv import load_dotenv
 load_dotenv()
 
-from src.trade_manager import set_trade, clear_trade, get_trade, current_pnl
+from src.emcure.trade_manager import set_trade, clear_trade, get_trade, current_pnl
 
 CAPITAL     = float(os.getenv("CAPITAL", "100000"))
 RISK_RUPEES = float(os.getenv("RISK_RUPEES", "4500"))
@@ -40,7 +40,7 @@ def _live_price() -> float:
 
 def cmd_buy(args: list[str]) -> None:
     if not args:
-        print("Usage: python trade.py buy <entry_price> [qty]")
+        print("Usage: python -m apps.trade buy <entry_price> [qty]")
         sys.exit(1)
 
     entry = float(args[0])
@@ -58,7 +58,7 @@ def cmd_buy(args: list[str]) -> None:
     print(f"   T2     ₹{state['t2']:,.2f}  (+₹20)")
     print(f"   T3     ₹{state['t3']:,.2f}  (+₹25)")
     print(f"\n   WhatsApp alerts will fire when each level is crossed.")
-    print(f"   Run 'python trade.py sell' when you exit.\n")
+    print(f"   Run 'python -m apps.trade sell' when you exit.\n")
 
 
 def cmd_sell(args: list[str]) -> None:
@@ -116,7 +116,7 @@ def cmd_holding(args: list[str]) -> None:
         print("❌ KITE_API_KEY / KITE_API_SECRET not set in .env")
         sys.exit(1)
 
-    from src.broker import KiteBroker, _nse_symbol
+    from src.execution.broker import KiteBroker, _nse_symbol
 
     broker = KiteBroker(key, secret)
     if not broker.is_authenticated():
@@ -163,14 +163,14 @@ def cmd_holding(args: list[str]) -> None:
           f"T2 ₹{avg*1.04:,.2f} (+4%)   T3 ₹{avg*1.06:,.2f} (+6%)")
     print(f"   Stop options:   −2% ₹{avg*0.98:,.2f}   −3% ₹{avg*0.97:,.2f}   −5% ₹{avg*0.95:,.2f}")
     print(f"\n   To track + get level alerts, choose levels then run e.g.:")
-    print(f"      python trade.py buy {avg:.2f} {qty}\n")
+    print(f"      python -m apps.trade buy {avg:.2f} {qty}\n")
 
 
 def cmd_track(args: list[str]) -> None:
     """Register a position with EXPLICIT target/stop levels for alert tracking.
     Use for delivery/swing holds where the fixed rupee levels don't fit."""
     if len(args) < 6:
-        print("Usage: python trade.py track <entry> <qty> <sl> <t1> <t2> <t3>")
+        print("Usage: python -m apps.trade track <entry> <qty> <sl> <t1> <t2> <t3>")
         sys.exit(1)
 
     entry, qty = float(args[0]), int(args[1])
@@ -190,7 +190,7 @@ def cmd_track(args: list[str]) -> None:
     print(f"   T1  ₹{state['t1']:,.2f}  (+₹{state['t1'] - entry:.2f}/sh,  +₹{round((state['t1']-entry)*qty):,.0f})")
     print(f"   T2  ₹{state['t2']:,.2f}  (+₹{state['t2'] - entry:.2f}/sh,  +₹{round((state['t2']-entry)*qty):,.0f})")
     print(f"   T3  ₹{state['t3']:,.2f}  (+₹{state['t3'] - entry:.2f}/sh,  +₹{round((state['t3']-entry)*qty):,.0f})")
-    print(f"\n   Level alerts fire as each is crossed. 'python trade.py sell' to close.\n")
+    print(f"\n   Level alerts fire as each is crossed. 'python -m apps.trade sell' to close.\n")
 
 
 COMMANDS = {
@@ -201,11 +201,11 @@ COMMANDS = {
 
 def main() -> None:
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
-        print("Usage: python trade.py buy <price> [qty]")
-        print("       python trade.py sell")
-        print("       python trade.py status")
-        print("       python trade.py holding")
-        print("       python trade.py track <entry> <qty> <sl> <t1> <t2> <t3>")
+        print("Usage: python -m apps.trade buy <price> [qty]")
+        print("       python -m apps.trade sell")
+        print("       python -m apps.trade status")
+        print("       python -m apps.trade holding")
+        print("       python -m apps.trade track <entry> <qty> <sl> <t1> <t2> <t3>")
         sys.exit(1)
 
     COMMANDS[sys.argv[1]](sys.argv[2:])
