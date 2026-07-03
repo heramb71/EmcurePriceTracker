@@ -45,6 +45,7 @@ def _warn_if_env_world_readable() -> None:
 
 
 from apps.main import _refresh
+from src.emcure import schedule
 from src.emcure.predictor import (
     format_eod_summary,
     format_post_open_briefing,
@@ -326,7 +327,7 @@ def _dispatch_alerts(
             )
 
     # ── Holiday alert (9:00–9:14 AM, once per day) ───────────────────────────
-    if notify_ready and now_t.hour == 9 and now_t.minute < 15:
+    if notify_ready and schedule.in_pre_open(now_t):
         holiday_key = f"holiday_{now_t.date()}"
         if holiday_key not in last_alerted and is_market_holiday(now_t.date()):
             _notify(format_holiday_alert(ticker, now_t.date()))
@@ -338,7 +339,7 @@ def _dispatch_alerts(
             return  # no further alerts on holidays
 
     # ── Pre-open briefing (9:00–9:14 AM, once per day) ───────────────────────
-    if notify_ready and now_t.hour == 9 and now_t.minute < 15:
+    if notify_ready and schedule.in_pre_open(now_t):
         pre_key = f"pre_open_{now_t.date()}"
         if pre_key not in last_alerted:
             q   = data.get("quote", {})
@@ -364,7 +365,7 @@ def _dispatch_alerts(
             logger.info("Pre-open briefing sent")
 
     # ── Post-open update (9:20–9:59 AM, once per day) ────────────────────────
-    elif notify_ready and now_t.hour == 9 and now_t.minute >= 20:
+    elif notify_ready and schedule.in_post_open(now_t):
         post_key = f"post_open_{now_t.date()}"
         if post_key not in last_alerted:
             q    = data.get("quote", {})
@@ -389,7 +390,7 @@ def _dispatch_alerts(
             logger.info("Post-open update sent")
 
     # ── EOD summary (3:30–3:59 PM, once per day) ─────────────────────────────
-    if notify_ready and now_t.hour == 15 and now_t.minute >= 30:
+    if notify_ready and schedule.in_eod(now_t):
         eod_key = f"eod_{now_t.date()}"
         if eod_key not in last_alerted:
             q   = data.get("quote", {})
@@ -732,7 +733,7 @@ def main() -> None:
             # The pre-open briefing and the holiday notice both run in the 9:00–9:14
             # window — before the open — so they live here, outside the
             # _is_market_open() gate below.
-            pre_open_window = now.hour == 9 and now.minute < 15
+            pre_open_window = schedule.in_pre_open(now)
             if pre_open_window:
                 is_holiday = is_market_holiday(now.date())
 
@@ -788,7 +789,7 @@ def main() -> None:
             # pre-open block — it must run outside the _is_market_open() gate.
             # It previously lived only inside the market-open path, where the
             # 15:30–15:59 window never overlaps an open market, so it never fired.
-            post_close_window = now.hour == 15 and now.minute >= 30
+            post_close_window = schedule.in_eod(now)
             if post_close_window and now.weekday() < 5 and not is_market_holiday(now.date()):
                 eod_key = f"eod_{now.date()}"
                 if eod_key not in last_alerted:

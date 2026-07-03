@@ -52,6 +52,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
+from src.emcure import schedule
 from src.emcure.dashboard import build_dashboard
 from src.emcure.events import is_near_event
 from src.emcure.intraday import (
@@ -529,7 +530,7 @@ def main() -> None:
             now_t = datetime.now(_IST)
 
             # ── Holiday check (9:00–9:14 AM, once per day) ───────────────────
-            if wa_ready and now_t.hour == 9 and now_t.minute < 15:
+            if wa_ready and schedule.in_pre_open(now_t):
                 holiday_key = f"holiday_{now_t.date()}"
                 if holiday_key not in last_alerted and is_market_holiday(now_t.date()):
                     send_whatsapp_alert(
@@ -544,7 +545,7 @@ def main() -> None:
                     last_alerted[f"eod_{now_t.date()}"]       = now_t
 
             # ── Scheduled pre-open briefing (9:00–9:14 AM, once per day) ────────
-            if wa_ready and now_t.hour == 9 and now_t.minute < 15:
+            if wa_ready and schedule.in_pre_open(now_t):
                 pre_key = f"pre_open_{now_t.date()}"
                 if pre_key not in last_alerted:
                     q         = data.get("quote", {})
@@ -570,7 +571,7 @@ def main() -> None:
                     last_alerted[pre_key] = now_t
 
             # ── Scheduled post-open update (9:20–9:59 AM, once per day) ─────────
-            if wa_ready and now_t.hour == 9 and now_t.minute >= 20:
+            if wa_ready and schedule.in_post_open(now_t):
                 post_key = f"post_open_{now_t.date()}"
                 if post_key not in last_alerted:
                     q        = data.get("quote", {})
@@ -595,7 +596,7 @@ def main() -> None:
                     last_alerted[post_key] = now_t
 
             # ── Scheduled EOD summary (3:30–3:59 PM, once per day) ───────────
-            if wa_ready and now_t.hour == 15 and now_t.minute >= 30:
+            if wa_ready and schedule.in_eod(now_t):
                 eod_key = f"eod_{now_t.date()}"
                 if eod_key not in last_alerted:
                     q   = data.get("quote", {})
