@@ -159,6 +159,14 @@ def _stats(pnls: list[float]) -> dict[str, Any]:
     }
 
 
+def recent_trades(conn: sqlite3.Connection, limit: int = 10) -> list[dict[str, Any]]:
+    """Most recently closed trades, newest first."""
+    rows = conn.execute(
+        "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (int(limit),)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def by_strategy(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
     """Per-strategy summary blocks."""
     strategies = [r["strategy"] for r in

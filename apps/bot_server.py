@@ -396,6 +396,68 @@ def health():
     }
 
 
+def _authorized() -> bool:
+    """Same key gate as /health — if HEALTH_API_KEY is unset, allow (local dev)."""
+    if not HEALTH_API_KEY:
+        return True
+    provided = (
+        request.args.get("key")
+        or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    )
+    return provided == HEALTH_API_KEY
+
+
+def _dashboard_context() -> dict:
+    """Assemble the read-only dashboard context from live sources."""
+    from datetime import datetime, timedelta, timezone
+
+    from src.emcure.managed_cycle import get_position as managed_get_position
+    from src.shared import heartbeat
+
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(ist)
+    market_open = now.weekday() < 5 and (9, 15) <= (now.hour, now.minute) <= (15, 30)
+
+    price = _live_price()
+    position = None
+    trade = get_trade()
+    if trade:
+        pnl = current_pnl(price) if price > 0 else None
+        position = {"source": "manual", "entry": trade.get("entry"),
+                    "qty": trade.get("qty"), "price": price,
+                    "pnl": pnl.get("pnl") if pnl else None}
+    else:
+        mp = managed_get_position()
+        if mp:
+            entry, qty = mp.get("entry", 0), mp.get("qty", 0)
+            position = {"source": "managed", "entry": entry, "qty": qty, "price": price,
+                        "pnl": round((price - entry) * qty, 0) if price > 0 else None}
+
+    conn = ledger.connect()
+    try:
+        ctx = {
+            "ticker": TICKER,
+            "now": now.strftime("%Y-%m-%d %H:%M IST"),
+            "market_open": market_open,
+            "heartbeat_age": heartbeat.age_seconds(),
+            "position": position,
+            "summary": ledger.summary(conn),
+            "by_strategy": ledger.by_strategy(conn),
+            "recent_trades": ledger.recent_trades(conn, limit=10),
+        }
+    finally:
+        conn.close()
+    return ctx
+
+
+@app.route("/dashboard")
+def dashboard():
+    if not _authorized():
+        return Response("Unauthorized", status=401)
+    from src.emcure.dashboard_web import render_dashboard
+    return Response(render_dashboard(_dashboard_context()), mimetype="text/html")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
@@ -421,6 +483,7 @@ if __name__ == "__main__":
     port = int(os.getenv("BOT_PORT", "5001"))
     print(f"\n🤖 {TICKER} Trade Bot")
     print(f"   Listening on http://localhost:{port}/whatsapp")
+    print(f"   Dashboard:  http://localhost:{port}/dashboard{'?key=…' if HEALTH_API_KEY else ''}")
     print(f"   WhatsApp authorized number: {AUTHORIZED or 'all'}")
     print(f"   Telegram: {'configured' if TELEGRAM_TOKEN else 'OFF'}")
     print(f"   Commands: BUY <price>, SELL, STATUS, HELP\n")
