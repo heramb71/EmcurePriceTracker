@@ -14,21 +14,22 @@ Or use:   ./start_bot.sh   (starts bot + ngrok tunnel together)
 from __future__ import annotations
 
 import os
-import sys
 
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
-from flask import Flask, request, Response
+from flask import Flask, Response, request
 from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from src.emcure.trade_manager import set_trade, clear_trade, get_trade, current_pnl
+from src.emcure import ledger
 from src.emcure.state import load_state
+from src.emcure.trade_manager import clear_trade, current_pnl, get_trade, set_trade
 from src.notify import channels
 
 app = Flask(__name__)
@@ -95,7 +96,12 @@ def _handle_sell(parts: list[str]) -> str:
     clear_trade()
 
     if pnl_data and price > 0:
-        sign = "+" if pnl_data["pnl"] >= 0 else ""
+        ledger.log_trade(
+            strategy="manual", ticker=TICKER, qty=pnl_data["qty"],
+            entry_price=pnl_data["entry"], exit_price=price,
+            pnl=pnl_data["pnl"], exit_reason="manual",
+            opened_at=trade.get("opened_at"),
+        )
         return (
             f"✅ Trade closed — {TICKER}.NS\n"
             f"\n"
@@ -227,10 +233,11 @@ def _handle_kite(parts: list[str]) -> str:
 def _handle_crypto(parts: list[str]) -> str:
     """On-demand BTC/ETH summary (same read as the 8 AM / 8 PM briefings)."""
     try:
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta, timezone
+
         from src.crypto.data import fetch_crypto_daily, fetch_crypto_quote, fetch_usd_inr
-        from src.crypto.signals import compute_crypto_signal
         from src.crypto.messages import format_evening_summary
+        from src.crypto.signals import compute_crypto_signal
 
         ist = timezone(timedelta(hours=5, minutes=30))
         usd = fetch_usd_inr()
@@ -389,6 +396,68 @@ def health():
     }
 
 
+def _authorized() -> bool:
+    """Same key gate as /health — if HEALTH_API_KEY is unset, allow (local dev)."""
+    if not HEALTH_API_KEY:
+        return True
+    provided = (
+        request.args.get("key")
+        or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    )
+    return provided == HEALTH_API_KEY
+
+
+def _dashboard_context() -> dict:
+    """Assemble the read-only dashboard context from live sources."""
+    from datetime import datetime, timedelta, timezone
+
+    from src.emcure.managed_cycle import get_position as managed_get_position
+    from src.shared import heartbeat
+
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(ist)
+    market_open = now.weekday() < 5 and (9, 15) <= (now.hour, now.minute) <= (15, 30)
+
+    price = _live_price()
+    position = None
+    trade = get_trade()
+    if trade:
+        pnl = current_pnl(price) if price > 0 else None
+        position = {"source": "manual", "entry": trade.get("entry"),
+                    "qty": trade.get("qty"), "price": price,
+                    "pnl": pnl.get("pnl") if pnl else None}
+    else:
+        mp = managed_get_position()
+        if mp:
+            entry, qty = mp.get("entry", 0), mp.get("qty", 0)
+            position = {"source": "managed", "entry": entry, "qty": qty, "price": price,
+                        "pnl": round((price - entry) * qty, 0) if price > 0 else None}
+
+    conn = ledger.connect()
+    try:
+        ctx = {
+            "ticker": TICKER,
+            "now": now.strftime("%Y-%m-%d %H:%M IST"),
+            "market_open": market_open,
+            "heartbeat_age": heartbeat.age_seconds(),
+            "position": position,
+            "summary": ledger.summary(conn),
+            "by_strategy": ledger.by_strategy(conn),
+            "recent_trades": ledger.recent_trades(conn, limit=10),
+        }
+    finally:
+        conn.close()
+    return ctx
+
+
+@app.route("/dashboard")
+def dashboard():
+    if not _authorized():
+        return Response("Unauthorized", status=401)
+    from src.emcure.dashboard_web import render_dashboard
+    return Response(render_dashboard(_dashboard_context()), mimetype="text/html")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
@@ -398,6 +467,7 @@ def _start_telegram_bot() -> None:
     if not TELEGRAM_TOKEN:
         return
     import threading
+
     from src.notify.telegram_bot import run_command_bot
 
     t = threading.Thread(
@@ -413,6 +483,7 @@ if __name__ == "__main__":
     port = int(os.getenv("BOT_PORT", "5001"))
     print(f"\n🤖 {TICKER} Trade Bot")
     print(f"   Listening on http://localhost:{port}/whatsapp")
+    print(f"   Dashboard:  http://localhost:{port}/dashboard{'?key=…' if HEALTH_API_KEY else ''}")
     print(f"   WhatsApp authorized number: {AUTHORIZED or 'all'}")
     print(f"   Telegram: {'configured' if TELEGRAM_TOKEN else 'OFF'}")
     print(f"   Commands: BUY <price>, SELL, STATUS, HELP\n")

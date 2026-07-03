@@ -3,13 +3,12 @@ from __future__ import annotations
 
 from src.emcure.state import (
     _default_state,
-    open_position,
     book_partial,
-    close_position,
     check_circuit_breaker,
+    close_position,
+    open_position,
     reset_session_if_new_day,
 )
-
 
 _SIZING = {
     "entry": 1700.0, "sl": 1685.0, "t1": 1710.0, "t2": 1720.0, "t3": 1725.0,

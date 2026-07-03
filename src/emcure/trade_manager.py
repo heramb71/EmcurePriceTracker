@@ -9,11 +9,13 @@ cycle — no restart needed after setting a trade via trade.py.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
+from contextlib import contextmanager
 from datetime import datetime
-from typing import Optional
+from typing import Iterator, Optional
+
+from src.shared.atomic_json import locked, read_json, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -22,19 +24,28 @@ _STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "trade_state.json")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # State I/O
+#
+# trade_state.json is touched by two processes — the bot_server command thread
+# (BUY/SELL) and the main_headless refresh loop. Reads are lock-free (atomic
+# os.replace guarantees a whole-file view), but every read-modify-write goes
+# through the `_transaction` lock so the two writers can't clobber each other.
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _load() -> dict:
-    try:
-        with open(_STATE_FILE) as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+    return read_json(_STATE_FILE, {})
 
 
 def _save(state: dict) -> None:
-    with open(_STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2)
+    write_json(_STATE_FILE, state)
+
+
+@contextmanager
+def _transaction() -> Iterator[dict]:
+    """Lock the state file, yield its current contents, persist on clean exit."""
+    with locked(_STATE_FILE):
+        state = _load()
+        yield state
+        _save(state)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -72,16 +83,16 @@ def set_trade(
         # preventing false alerts from pre-entry intraday highs.
         "opened_at":  datetime.now().isoformat(timespec="seconds"),
     }
-    _save(state)
+    with locked(_STATE_FILE):
+        _save(state)
     return state
 
 
 def clear_trade() -> None:
     """Mark the trade as closed."""
-    state = _load()
-    state["active"] = False
-    state["closed_at"] = datetime.now().isoformat(timespec="seconds")
-    _save(state)
+    with _transaction() as state:
+        state["active"] = False
+        state["closed_at"] = datetime.now().isoformat(timespec="seconds")
 
 
 def get_trade() -> Optional[dict]:
@@ -102,7 +113,15 @@ def check_and_mark(price: float, day_high: float, day_low: float) -> list[dict]:
     day_high and no target alerts fire. Subsequent calls only fire when
     day_high exceeds the watermark (i.e. a NEW high was made after entry).
     SL uses day_low and is not subject to the watermark.
+
+    The whole read-modify-write runs under the file lock so a concurrent
+    BUY/SELL from the bot thread can't resurrect a just-closed trade.
     """
+    with locked(_STATE_FILE):
+        return _check_and_mark_locked(price, day_high, day_low)
+
+
+def _check_and_mark_locked(price: float, day_high: float, day_low: float) -> list[dict]:
     state = _load()
     if not state.get("active"):
         return []

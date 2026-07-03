@@ -4,7 +4,6 @@ from __future__ import annotations
 from apps import main
 from src.emcure.state import _default_state
 
-
 _QUOTE  = {"price": 1700.0, "volume": 100000}
 _ST     = {"supertrend": 1650.0, "direction": 1, "atr": 30.0}
 _BUY    = {"triggered": True, "conditions": {}, "details": {}}

@@ -1,8 +1,6 @@
 import datetime
-from unittest.mock import MagicMock, patch
 
 import pandas as pd
-import pytest
 
 from emcure_tracker.data import market as mkt
 

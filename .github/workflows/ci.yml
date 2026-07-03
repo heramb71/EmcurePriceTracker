@@ -1,0 +1,41 @@
+name: CI
+
+# Runs the test suite on every push and PR to main. This is the gate that was
+# missing: 233 tests existed but nothing ran them before a deploy shipped.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install core deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-core.txt
+
+      - name: Run tests
+        # FINBERT_MODEL_PATH=skip keeps torch/transformers off the runner, same
+        # as the server. Network calls in tests are mocked; nothing hits yfinance.
+        env:
+          FINBERT_MODEL_PATH: skip
+        run: python -m pytest -q
+
+      - name: Lint (ruff)
+        run: |
+          pip install ruff
+          ruff check src apps tests

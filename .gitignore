@@ -36,6 +36,13 @@ trade_state.json
 radar.db
 radar.db-wal
 radar.db-shm
+emcure.db
+emcure.db-wal
+emcure.db-shm
+heartbeat.json
+# atomic-write sidecars (src/shared/atomic_json.py)
+*.json.lock
+*.json.*.tmp
 
 # SSH keys
 *.pem

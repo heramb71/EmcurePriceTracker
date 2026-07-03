@@ -1,7 +1,6 @@
 """Tests for the parameterized SMA7 mean-reversion engine (cross-stock lab)."""
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 import pytest
 

@@ -20,7 +20,6 @@ from collections import defaultdict
 import pandas as pd
 
 from apps.radar_replay import _daily_slice, _intraday, snapshot_at
-from src.shared.data import fetch_daily
 from src.radar import scoring, signals, tracker
 from src.radar.alert_format import signal_label
 from src.radar.dispatch import AlertGate
@@ -28,6 +27,7 @@ from src.radar.features import fetch_index_daily
 from src.radar.regime import breadth, current_regime
 from src.radar.scan import _core_symbols
 from src.radar.universe import NIFTY, SYMBOLS
+from src.shared.data import fetch_daily
 
 FORWARD_DAYS = 10            # evaluate target-vs-stop over the next N daily bars
 ROUND_TRIP_COST_PCT = 0.4   # delivery round-trip haircut on net expectancy
@@ -157,7 +157,8 @@ def _group(title, rows, key, label_fn=lambda k: k):
 def _report(records: list[dict]) -> None:
     print("═" * 78)
     if not records:
-        print("No gated alerts over the window."); return
+        print("No gated alerts over the window.")
+        return
     print(_line("OVERALL", _stats(records)).strip())
     print(f"(net expectancy = gross − {ROUND_TRIP_COST_PCT}% round-trip cost; "
           f"forward window = {FORWARD_DAYS} trading days)\n")

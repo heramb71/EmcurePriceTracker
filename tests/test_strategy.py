@@ -8,7 +8,6 @@ from src.emcure.strategy import (
     unrealised_pnl,
 )
 
-
 # ── Position sizing ──────────────────────────────────────────────────────────
 
 def test_position_size_caps_qty_by_capital():

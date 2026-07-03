@@ -13,19 +13,18 @@ Not wired into the service; a manual review tool. Run:
 from __future__ import annotations
 
 import sys
-from datetime import datetime
 
 import pandas as pd
 
-from src.shared.data import fetch_daily, fetch_intraday
-from src.shared.indicators import compute_atr, compute_avg_volume, compute_ema, compute_rsi
 from src.emcure.intraday import compute_sma7
 from src.radar import scoring, signals, tracker
 from src.radar.alert_format import signal_label
-from src.radar.scan import _core_symbols
 from src.radar.features import StockFeatures, _avg_atr, _return, fetch_index_daily
 from src.radar.regime import breadth, current_regime
+from src.radar.scan import _core_symbols
 from src.radar.universe import NIFTY, SYMBOLS, adtv_cr
+from src.shared.data import fetch_daily, fetch_intraday
+from src.shared.indicators import compute_atr, compute_avg_volume, compute_ema, compute_rsi
 
 INTERVAL = "60m"
 INTRADAY_DAYS = 30

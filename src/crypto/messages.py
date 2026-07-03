@@ -72,7 +72,6 @@ def _macd_label(macd_hist: float) -> str:
 
 def _asset_block_short(name: str, sym: str, quote: dict, sig: dict) -> list[str]:
     """Compact layman block used in morning briefing."""
-    usd_inr  = quote["usd_inr"]
     pct      = quote["change_pct"]
     arrow    = "▲" if pct >= 0 else "▼"
     sign     = "+" if pct >= 0 else ""
@@ -164,16 +163,13 @@ def format_evening_summary(
         ("Ethereum", "ETH", eth_quote, eth_sig),
     ]:
         signal_emoji = _SIGNAL_EMOJI.get(sig["signal"], "⚪")
-        trend_emoji  = _TREND_EMOJI.get(sig["trend"], "📊")
         pct   = quote["change_pct"]
         arrow = "▲" if pct >= 0 else "▼"
         sign  = "+" if pct >= 0 else ""
 
         support  = sig["bb_lower"] * usd_inr
         resist   = sig["bb_upper"] * usd_inr
-        ema50    = sig["ema50"]    * usd_inr
         ema200   = sig["ema200"]   * usd_inr
-        above_50  = quote["price_inr"] > ema50
         above_200 = quote["price_inr"] > ema200
 
         lines += [

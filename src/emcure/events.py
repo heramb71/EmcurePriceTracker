@@ -10,7 +10,7 @@ Results are cached per (ticker, day) to avoid hammering the API each poll.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Optional
 
 import yfinance as yf

@@ -1,4 +1,3 @@
-import pytest
 
 from emcure_tracker.data.news import ArticleResult
 from emcure_tracker.sentiment import SentimentModel, score_articles

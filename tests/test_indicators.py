@@ -3,16 +3,16 @@ import pandas as pd
 import pytest
 
 from emcure_tracker.indicators import (
-    compute_rsi,
-    compute_macd,
+    compute_all,
+    compute_avg_range,
+    compute_avg_volume,
     compute_bollinger,
     compute_ema,
-    compute_avg_volume,
-    compute_avg_range,
+    compute_macd,
+    compute_rsi,
     compute_support_resistance,
     compute_volume_signal,
     rsi_signal,
-    compute_all,
 )
 
 
@@ -107,6 +107,7 @@ def test_compute_atr_ignores_trailing_nan_row():
     """yfinance's pre-market all-NaN 'today' row must not zero out ATR."""
     import numpy as np
     import pandas as pd
+
     from src.shared.indicators import compute_atr
     rows = [{"high": 100 + i, "low": 90 + i, "close": 95 + i} for i in range(30)]
     rows.append({"high": np.nan, "low": np.nan, "close": np.nan})   # today's placeholder

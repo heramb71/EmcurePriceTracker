@@ -1,39 +1,45 @@
+# Minimal server deps (no torch/FinBERT). Versions are floor+ceiling ranges:
+# the floor is the minimum known-good API, the ceiling stops a breaking major
+# from being pulled in on a fresh deploy. yfinance is the prime example — it
+# silently moved 0.2 → 1.x (a breaking API change) under a bare `>=0.2.40`.
+# Bump a ceiling deliberately after testing, never let it float open.
+
 # Core data sources
-yfinance>=0.2.40
-feedparser>=6.0.11
-requests>=2.28.0
+yfinance>=0.2.40,<2.0
+feedparser>=6.0.11,<7.0
+requests>=2.28.0,<3.0
 
 # Core technical analysis
-pandas>=2.2
-numpy>=1.26
-scikit-learn>=1.4
+pandas>=2.2,<3.0
+numpy>=1.26,<3.0
+scikit-learn>=1.4,<2.0
 
 # Optional: market regime detection (HMM)
-hmmlearn>=0.3
+hmmlearn>=0.3,<0.4
 
 # Sentiment — VADER only (lightweight, no torch).
 # FinBERT is optional and lives in requirements.txt; src/sentiment.py imports
 # transformers lazily and falls back to VADER, so torch is NOT needed on the
 # server (which runs FINBERT_MODEL_PATH=skip). Keeping torch here pulled the
 # full ~5G CUDA stack onto a GPU-less ARM VM for nothing.
-vaderSentiment>=3.3
+vaderSentiment>=3.3,<4.0
 
 # Display
-rich>=13.7
+rich>=13.7,<16.0
 
 # Alerts
-python-telegram-bot>=21.0
-twilio>=9.0
+python-telegram-bot>=21.0,<23.0
+twilio>=9.0,<10.0
 
 # WhatsApp bot server
-flask>=3.0
+flask>=3.0,<4.0
 
 # Zerodha Kite Connect (auto-trading)
-kiteconnect>=5.0
-pyotp>=2.9
+kiteconnect>=5.0,<6.0
+pyotp>=2.9,<3.0
 
 # Config
-python-dotenv>=1.0
+python-dotenv>=1.0,<2.0
 
 # Testing
-pytest>=8.0
+pytest>=8.0,<10.0

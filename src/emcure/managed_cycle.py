@@ -24,12 +24,14 @@ strategies never share a record).
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+from src.emcure import ledger
+from src.shared.atomic_json import read_json, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -197,16 +199,11 @@ def decide(position: Optional[dict], market: dict, cfg: ManagedConfig) -> Decisi
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _load() -> dict:
-    try:
-        with open(_STATE_FILE) as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+    return read_json(_STATE_FILE, {})
 
 
 def _save(state: dict) -> None:
-    with open(_STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2)
+    write_json(_STATE_FILE, state)
 
 
 def get_position() -> Optional[dict]:
@@ -259,10 +256,13 @@ def _maybe_roll_day(now: datetime) -> None:
         _save(state)
 
 
-def _record_exit(pnl: float, is_stop: bool, now: datetime) -> None:
+def _record_exit(pnl: float, is_stop: bool, now: datetime, *,
+                 ticker: str = "", exit_price: float = 0.0, live: bool = False) -> None:
     """Atomically close the position and book the exit into the day's tally so the
-    kill-switch and cooldown can see it."""
+    kill-switch and cooldown can see it. Also appends the closed round-trip to the
+    durable P&L ledger (best-effort — never blocks the exit)."""
     state = _load()
+    position = state.get("position") or {}
     if state.get("day") != now.date().isoformat():
         state["day"] = now.date().isoformat()
         state["realized_pnl_today"] = 0.0
@@ -273,6 +273,20 @@ def _record_exit(pnl: float, is_stop: bool, now: datetime) -> None:
         state["stopped_out_today"] = True
     state.pop("position", None)
     _save(state)
+
+    if position:
+        ledger.log_trade(
+            strategy="managed",
+            ticker=ticker or os.getenv("TICKER", "EMCURE"),
+            qty=int(position.get("qty", 0)),
+            entry_price=float(position.get("entry", 0.0)),
+            exit_price=float(exit_price),
+            pnl=float(pnl),
+            exit_reason="stop" if is_stop else "target",
+            dry_run=not live,
+            opened_at=position.get("opened_at"),
+            closed_at=now,
+        )
 
 
 def reentry_blocked(cfg: ManagedConfig, now: datetime) -> Optional[str]:
@@ -431,7 +445,7 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
         logger.info("Managed-cycle: live decision '%s' skipped — no broker (data-only call)", decision.action)
         return events
     if decision.action in ("sell", "exit_sl"):
-        return events + _execute_sell(ticker, decision, broker, now)
+        return events + _execute_sell(ticker, decision, broker, now, cfg)
     if decision.action == "reenter":
         return events + _execute_buy(ticker, decision, broker, cfg)
     return events
@@ -449,7 +463,8 @@ def _settle_closed_position(ticker: str, position: dict, broker, cfg: ManagedCon
             entry = float(position["entry"])
             qty   = int(res["filled_qty"])
             pnl   = int(round((res["fill_price"] - entry) * qty))
-            _record_exit(pnl, is_stop=True, now=now)
+            _record_exit(pnl, is_stop=True, now=now, ticker=ticker,
+                         exit_price=res["fill_price"], live=cfg.live)
             logger.warning("Managed-cycle STOP filled %d @ ₹%.2f  pnl=₹%d", qty, res["fill_price"], pnl)
             return [("managed_sell", {
                 "ticker": ticker, "exit_price": res["fill_price"], "qty": qty,
@@ -478,7 +493,8 @@ def _ensure_protective_stop(ticker: str, broker) -> Optional[str]:
     return new_id
 
 
-def _execute_sell(ticker: str, decision: Decision, broker, now: datetime) -> list[tuple[str, dict]]:
+def _execute_sell(ticker: str, decision: Decision, broker, now: datetime,
+                  cfg: ManagedConfig) -> list[tuple[str, dict]]:
     events: list[tuple[str, dict]] = []
     pos = get_position() or {}
     # Cancel the resting stop first so it can't also fire and double-sell.
@@ -496,7 +512,8 @@ def _execute_sell(ticker: str, decision: Decision, broker, now: datetime) -> lis
     pnl        = int(round((exit_price - entry) * decision.qty))
     # Books the P&L into the day's tally + sets the cooldown/stop-out flags so the
     # kill-switch can halt re-entries — and closes the position atomically.
-    _record_exit(pnl, is_stop=(decision.action == "exit_sl"), now=now)
+    _record_exit(pnl, is_stop=(decision.action == "exit_sl"), now=now, ticker=ticker,
+                 exit_price=exit_price, live=cfg.live)
     logger.warning("Managed-cycle SOLD %d @ ₹%.2f  pnl=₹%d", decision.qty, exit_price, pnl)
     events.append(("managed_sell", {
         "ticker": ticker, "exit_price": exit_price, "qty": decision.qty,

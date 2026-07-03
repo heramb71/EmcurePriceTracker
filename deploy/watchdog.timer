@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the EMCURE tracker watchdog every 5 minutes
+
+[Timer]
+# First run 2 min after boot, then every 5 min. The watchdog self-gates to
+# market hours, so off-hours ticks are cheap no-ops.
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=emcure-watchdog.service
+
+[Install]
+WantedBy=timers.target

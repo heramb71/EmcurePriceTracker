@@ -18,13 +18,14 @@ Daily-bar approximation (yfinance only serves ~60d of intraday):
 from __future__ import annotations
 
 import sys
+
 import numpy as np
 import pandas as pd
 
-from src.shared.data import fetch_daily
+from src.emcure.intraday import classify_7d_trend
 from src.emcure.managed_cycle import ManagedConfig, decide
 from src.shared.costs import net_pnl
-from src.emcure.intraday import classify_7d_trend
+from src.shared.data import fetch_daily
 
 # Strategy params — match the live managed-cycle (server .env / defaults).
 TARGETS = (15.0, 20.0, 30.0)
@@ -141,7 +142,8 @@ def main():
     print("Fetching ~6 months of EMCURE daily data from yfinance…")
     df = fetch_daily("EMCURE", days=DAYS)
     if df is None or df.empty:
-        print("ERROR: no data"); sys.exit(1)
+        print("ERROR: no data")
+        sys.exit(1)
     df = df.sort_values("date").reset_index(drop=True)
     start, end = pd.to_datetime(df.date.iloc[0]).date(), pd.to_datetime(df.date.iloc[-1]).date()
     print(f"Data: {len(df)} trading days  {start} → {end}")
@@ -156,7 +158,8 @@ def main():
         print(f"SCENARIO: {name}   targets={TARGETS}  reentry_gap=₹{REENTRY_GAP:.0f}")
         print("=" * 70)
         if r["n"] == 0:
-            print("No trades triggered."); continue
+            print("No trades triggered.")
+            continue
         print(f"Trades:           {r['n']}   "
               f"(target-sells={r['target_sells']}, stops={r['stops']})")
         print(f"Win rate:         {r['win_rate']:.0f}%  "

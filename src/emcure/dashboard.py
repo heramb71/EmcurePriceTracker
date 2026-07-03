@@ -10,7 +10,6 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _pct_price(base: float, pct: float) -> float:

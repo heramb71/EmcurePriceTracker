@@ -28,8 +28,8 @@ from src.radar.signals import (
     GAP_REVERSION,
     RVOL_REVERSAL,
     SMA7_REVERSION,
-    SignalHit,
     VWAP_PULLBACK,
+    SignalHit,
 )
 
 # ── Momentum weights (sum 100) ──
