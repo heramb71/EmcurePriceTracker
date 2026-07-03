@@ -64,7 +64,7 @@ EmcurePriceTracker/
 │   │   ├── probability.py, backtest.py, events.py, state.py, dashboard.py
 │   ├── radar/                # Multi-stock opportunity radar (read-only scanner)
 │   ├── swing/                # Swing-bot research lab (gated FAIL — do not deploy)
-│   └── crypto/               # Crypto data / signals / messages
+│   └── crypto/               # Crypto data / signals / messages / reversion lab / outcomes
 ├── deploy/
 │   ├── oracle_setup.sh       # Full Oracle Cloud deployment (run once on server)
 │   ├── *.service             # systemd units — ExecStart=python3 -m apps.<name>
@@ -364,6 +364,29 @@ emcure-tracker). Watch zones are percentage-based (locked to the SMA7 signal's
 1.4% threshold) so they scale across the ₹70–₹1800 price range; the summary is
 watch-only and carries no tomorrow-probability claim (the reversion edge isn't
 validated outside EMCURE).
+
+---
+
+## Crypto (`src/crypto/`, `apps/crypto_headless.py`)
+
+BTC/ETH tracker: 8 AM / 8 PM briefings + oversold/overbought signal alerts
+(Telegram `crypto` bot). **Alert-only — never trades.** Two research layers gate
+any future crypto execution:
+
+- **Reversion lab** — `python -m apps.crypto_reversion_lab` backtests EMCURE-style
+  SMA7 dip-buying (percentage gaps/targets, multi-day holds, `src/crypto/reversion.py`)
+  under the Indian VDA cost model (`src/crypto/costs.py`: exchange fees + 30%+cess
+  per winner with **no loss set-off**; 1% TDS excluded as advance tax).
+  **Gated FAIL (2026-07-03, ~7y history): do not build crypto execution.**
+  BTC has no edge even gross (best PF ≈ 1.07). ETH has a real gross edge
+  (gap ≥7% → +5% target: PF 1.58, +1.26%/trade, 69% WR, n=32) that survives fees
+  (PF 1.38) and **dies at the tax layer** (PF 0.95, −0.12%/trade) — the no-offset
+  VDA tax alone flips it negative.
+- **Outcome tracking** — every fired crypto alert is recorded to `crypto.db`
+  (WAL, gitignored; sole writer crypto_headless) and scored at 1d/3d/7d forward
+  horizons (`src/crypto/outcomes.py`, WIN/LOSS thresholds ±1.5/3/5%).
+  `python -m apps.crypto_outcomes` prints expectancy by symbol × alert-type ×
+  horizon. Judge combos only at n≥20, same discipline as the radar.
 
 ---
 

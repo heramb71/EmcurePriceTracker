@@ -40,6 +40,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from src.crypto import outcomes
 from src.crypto.data import fetch_crypto_daily, fetch_crypto_quote, fetch_usd_inr
 from src.crypto.messages import (
     format_evening_summary,
@@ -126,6 +127,11 @@ def main() -> None:
             logger.error("Telegram alert dropped after retry (%d chars)", len(msg))
 
     last_alerted: dict = {}
+    # Forward-outcome tracking (crypto.db): every fired alert is recorded and
+    # scored at 1d/3d/7d so the alerts build an evidence base — the gate any
+    # future crypto trading must pass. Read the report:
+    # python -m apps.crypto_outcomes
+    outcomes_conn = outcomes.connect()
     logger.info("Crypto tracker started. Refresh every %ds.", _REFRESH_SECONDS)
     logger.info("WhatsApp: %s | Telegram: %s",
                 "on" if wa_ready else "off",
@@ -143,6 +149,15 @@ def main() -> None:
 
         if btc_quote and btc_sig and eth_quote and eth_sig:
             _log_state(btc_quote, btc_sig, eth_quote, eth_sig)
+
+            # Book matured forward outcomes for previously recorded alerts.
+            written = outcomes.evaluate_due(
+                outcomes_conn,
+                {"BTC": btc_quote["price_usd"], "ETH": eth_quote["price_usd"]},
+                now,
+            )
+            if written:
+                logger.info("Crypto outcomes recorded this cycle: %d", written)
 
             # ── Morning briefing ──────────────────────────────────────────────
             if _in_window(now, _MORNING_HOUR):
@@ -183,6 +198,7 @@ def main() -> None:
                     if cooldown_ok and is_alert_worthy(sig):
                         msg = format_signal_alert(name, sym, quote, sig, now)
                         _wa(msg)
+                        outcomes.record_alert(outcomes_conn, sym, sig, quote, now)
                         last_alerted[alert_key] = now
                         logger.info(
                             "Signal alert: %s | %s | RSI %.0f | score %.2f",

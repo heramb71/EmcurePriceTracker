@@ -40,6 +40,9 @@ radar.db-shm
 emcure.db
 emcure.db-wal
 emcure.db-shm
+crypto.db
+crypto.db-wal
+crypto.db-shm
 heartbeat.json
 heartbeat-*.json
 # atomic-write sidecars (src/shared/atomic_json.py)
