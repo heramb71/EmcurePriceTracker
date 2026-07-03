@@ -74,3 +74,32 @@ def test_format_report_has_stats(tmp_path):
                         entry_price=1600, exit_price=1620, pnl=160)
     report = ledger.format_report(conn)
     assert "Win rate" in report and "Profit factor" in report
+
+
+def test_day_stats_sums_live_trades_for_the_date(monkeypatch, tmp_path):
+    from datetime import datetime
+    monkeypatch.setenv("EMCURE_DB_PATH", str(tmp_path / "emcure.db"))
+    conn = ledger.connect()
+    today = datetime(2026, 7, 3, 15, 10)
+    ledger.record_trade(conn, strategy="managed", ticker="EMCURE", qty=8,
+                        entry_price=1600, exit_price=1620, pnl=160,
+                        closed_at=today)
+    ledger.record_trade(conn, strategy="manual", ticker="EMCURE", qty=10,
+                        entry_price=1600, exit_price=1590, pnl=-100,
+                        closed_at=today)
+    # Dry-run rows are paper, not money — excluded from the day tally.
+    ledger.record_trade(conn, strategy="managed", ticker="EMCURE", qty=8,
+                        entry_price=1600, exit_price=1700, pnl=800,
+                        dry_run=True, closed_at=today)
+    # A different day never leaks in.
+    ledger.record_trade(conn, strategy="managed", ticker="EMCURE", qty=8,
+                        entry_price=1600, exit_price=1650, pnl=400,
+                        closed_at=datetime(2026, 7, 2, 15, 10))
+    conn.close()
+    stats = ledger.day_stats("2026-07-03")
+    assert stats == {"pnl": 60.0, "trades": 2}
+
+
+def test_day_stats_never_raises(monkeypatch):
+    monkeypatch.setenv("EMCURE_DB_PATH", "/nonexistent-dir/emcure.db")
+    assert ledger.day_stats("2026-07-03") == {"pnl": 0.0, "trades": 0}

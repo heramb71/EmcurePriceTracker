@@ -27,7 +27,10 @@ _COMMAND_MENU = [
     {"command": "status", "description": "Live P&L and open position"},
     {"command": "crypto", "description": "BTC/ETH market summary"},
     {"command": "buy",    "description": "Record entry — /buy <price> [qty]"},
-    {"command": "sell",   "description": "Close the recorded trade"},
+    {"command": "sell",   "description": "Close the recorded trade — /sell [price]"},
+    {"command": "exit",   "description": "Sell the managed position now"},
+    {"command": "halt",   "description": "Pause managed re-entries"},
+    {"command": "resume", "description": "Re-enable managed re-entries"},
     {"command": "help",   "description": "Show all commands"},
     {"command": "token",  "description": "Kite daily auth — /token <request_token>"},
 ]

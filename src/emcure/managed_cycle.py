@@ -28,10 +28,10 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 from src.emcure import ledger
-from src.shared.atomic_json import read_json, write_json
+from src.shared.atomic_json import locked, read_json, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -206,18 +206,41 @@ def _save(state: dict) -> None:
     write_json(_STATE_FILE, state)
 
 
+def _mutate(update: Callable[[dict], None]) -> dict:
+    """Locked read-modify-write of the state file. managed_state.json has two
+    writers — the tracker loop and the bot_server command handlers (EXIT/HALT/
+    RESUME) — so every mutation holds the advisory lock, exactly like
+    trade_state.json. Returns the state as written."""
+    with locked(_STATE_FILE):
+        state = _load()
+        update(state)
+        _save(state)
+        return state
+
+
+def _set_once(key: str, sig: str) -> bool:
+    """Locked compare-and-set of a dedupe signature. True when ``sig`` is new
+    (the caller should fire its one-time event), False when already recorded."""
+    with locked(_STATE_FILE):
+        state = _load()
+        if state.get(key) == sig:
+            return False
+        state[key] = sig
+        _save(state)
+        return True
+
+
 def get_position() -> Optional[dict]:
     return _load().get("position")
 
 
 def _update_position(**fields) -> None:
     """Merge fields into the stored position (e.g. the resting stop's order id)."""
-    state = _load()
-    pos = state.get("position")
-    if pos:
-        pos.update(fields)
-        state["position"] = pos
-        _save(state)
+    def _apply(state: dict) -> None:
+        pos = state.get("position")
+        if pos:
+            pos.update(fields)
+    _mutate(_apply)
 
 
 def set_position(entry: float, qty: int, cfg: ManagedConfig) -> dict:
@@ -228,17 +251,18 @@ def set_position(entry: float, qty: int, cfg: ManagedConfig) -> dict:
         "targets":          list(cfg.targets),
         "opened_at":        datetime.now().isoformat(timespec="seconds"),
         "high_since_entry": round(float(entry), 2),
+        "low_since_entry":  round(float(entry), 2),
     }
-    state = _load()
-    state["position"] = pos
-    _save(state)
+    def _apply(state: dict) -> None:
+        state["position"] = pos
+    _mutate(_apply)
     return pos
 
 
 def clear_position() -> None:
-    state = _load()
-    state.pop("position", None)
-    _save(state)
+    def _apply(state: dict) -> None:
+        state.pop("position", None)
+    _mutate(_apply)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -248,12 +272,13 @@ def clear_position() -> None:
 def _maybe_roll_day(now: datetime) -> None:
     """Reset the day's realized-loss tally and stop-out flag at a date change."""
     today = now.date().isoformat()
-    state = _load()
-    if state.get("day") != today:
-        state["day"] = today
-        state["realized_pnl_today"] = 0.0
-        state["stopped_out_today"] = False
-        _save(state)
+    with locked(_STATE_FILE):
+        state = _load()
+        if state.get("day") != today:
+            state["day"] = today
+            state["realized_pnl_today"] = 0.0
+            state["stopped_out_today"] = False
+            _save(state)
 
 
 def _record_exit(pnl: float, is_stop: bool, now: datetime, *,
@@ -261,18 +286,19 @@ def _record_exit(pnl: float, is_stop: bool, now: datetime, *,
     """Atomically close the position and book the exit into the day's tally so the
     kill-switch and cooldown can see it. Also appends the closed round-trip to the
     durable P&L ledger (best-effort — never blocks the exit)."""
-    state = _load()
-    position = state.get("position") or {}
-    if state.get("day") != now.date().isoformat():
-        state["day"] = now.date().isoformat()
-        state["realized_pnl_today"] = 0.0
-        state["stopped_out_today"] = False
-    state["realized_pnl_today"] = round(state.get("realized_pnl_today", 0.0) + pnl, 2)
-    state["last_exit_at"] = now.isoformat()
-    if is_stop:
-        state["stopped_out_today"] = True
-    state.pop("position", None)
-    _save(state)
+    with locked(_STATE_FILE):
+        state = _load()
+        position = state.get("position") or {}
+        if state.get("day") != now.date().isoformat():
+            state["day"] = now.date().isoformat()
+            state["realized_pnl_today"] = 0.0
+            state["stopped_out_today"] = False
+        state["realized_pnl_today"] = round(state.get("realized_pnl_today", 0.0) + pnl, 2)
+        state["last_exit_at"] = now.isoformat()
+        if is_stop:
+            state["stopped_out_today"] = True
+        state.pop("position", None)
+        _save(state)
 
     if position:
         ledger.log_trade(
@@ -291,9 +317,12 @@ def _record_exit(pnl: float, is_stop: bool, now: datetime, *,
 
 def reentry_blocked(cfg: ManagedConfig, now: datetime) -> Optional[str]:
     """Reason a re-entry is currently blocked, or None if allowed. Enforces the
-    daily-loss kill-switch, the same-day stop-out block, and the post-exit
-    cooldown — so the cycle can't churn straight back in after a stop."""
+    HALT command, the daily-loss kill-switch, the same-day stop-out block, and
+    the post-exit cooldown — so the cycle can't churn straight back in after a
+    stop."""
     state = _load()
+    if state.get("halted"):
+        return "halted by HALT command (send RESUME to re-enable)"
     if state.get("day") != now.date().isoformat():
         return None  # new day — counters reset, nothing blocks
     if cfg.block_reentry_after_stop and state.get("stopped_out_today"):
@@ -310,6 +339,48 @@ def reentry_blocked(cfg: ManagedConfig, now: datetime) -> Optional[str]:
         except ValueError:
             pass
     return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Remote commands (written by bot_server, consumed by the tracker's step())
+# ─────────────────────────────────────────────────────────────────────────────
+
+def request_exit() -> Optional[dict]:
+    """Ask the cycle to sell the open position on its next step (EXIT command).
+    Returns the position that will be exited, or None when flat (no flag set)."""
+    with locked(_STATE_FILE):
+        state = _load()
+        pos = state.get("position")
+        if not pos:
+            return None
+        state["exit_requested"] = True
+        _save(state)
+        return pos
+
+
+def _consume_exit_request() -> bool:
+    """Pop the EXIT flag (if set) and report whether it was pending."""
+    with locked(_STATE_FILE):
+        state = _load()
+        if state.pop("exit_requested", None):
+            _save(state)
+            return True
+    return False
+
+
+def set_halted(on: bool) -> None:
+    """HALT/RESUME command: block all re-entries until explicitly resumed.
+    Persists across restarts and day rolls — exits are never blocked."""
+    def _apply(state: dict) -> None:
+        if on:
+            state["halted"] = True
+        else:
+            state.pop("halted", None)
+    _mutate(_apply)
+
+
+def is_halted() -> bool:
+    return bool(_load().get("halted"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -386,21 +457,38 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
         up_levels = [round(float(position["entry"]) + d, 2) for d in cfg.targets]
         market = {**market, "target_probs": daily_reach_probs(df_daily, float(market.get("price", 0) or 0), up_levels)}
 
-    # day_high from yfinance is the SESSION-WIDE high including the pre-entry
-    # morning spike — using it raw triggers immediate false sells on the first
-    # cycle after entry. Shadow it with high_since_entry: the max price we have
-    # actually observed WHILE holding the position.
+    # day_high / day_low from yfinance are SESSION-WIDE extremes, including the
+    # pre-entry morning spike or crash — using them raw triggers immediate false
+    # sells (high ≥ target) or false stop-outs (low ≤ sl) on the first cycle
+    # after entry. Shadow both with the extremes actually observed WHILE holding:
+    # high_since_entry / low_since_entry.
     if position:
         cur = float(market.get("price", 0) or 0)
         if cur > 0:
             prev_high = float(position.get("high_since_entry") or position["entry"])
+            prev_low  = float(position.get("low_since_entry") or position["entry"])
             new_high  = max(prev_high, cur)
+            new_low   = min(prev_low, cur)
+            updates: dict[str, float] = {}
             if new_high != prev_high:
-                _update_position(high_since_entry=round(new_high, 2))
-                position = {**position, "high_since_entry": round(new_high, 2)}
-            market = {**market, "day_high": new_high}
+                updates["high_since_entry"] = round(new_high, 2)
+            if new_low != prev_low:
+                updates["low_since_entry"] = round(new_low, 2)
+            if updates:
+                _update_position(**updates)
+                position = {**position, **updates}
+            market = {**market, "day_high": new_high, "day_low": new_low}
 
-    decision = decide(position, market, cfg)
+    # A pending EXIT command overrides the normal decision: sell everything at
+    # the current price. The flag is consumed either way — when flat there is
+    # nothing to exit and the request simply expires.
+    if _consume_exit_request() and position:
+        decision = Decision(
+            "sell", price=float(market.get("price", 0) or 0), qty=int(position["qty"]),
+            reason="Manual EXIT command — selling at the current price",
+        )
+    else:
+        decision = decide(position, market, cfg)
     logger.info("Managed-cycle decision: %s — %s", decision.action, decision.reason)
 
     if decision.action == "hold":
@@ -415,21 +503,13 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
         blocked = reentry_blocked(cfg, now)
         if blocked:
             logger.info("Managed-cycle re-entry blocked — %s", blocked)
-            state = _load()
-            sig   = f"{blocked}:{now.date()}"
-            if state.get("last_block_sig") != sig:
-                state["last_block_sig"] = sig
-                _save(state)
+            if _set_once("last_block_sig", f"{blocked}:{now.date()}"):
                 events.append(("managed_blocked", {"ticker": ticker, "reason": blocked}))
             return events
 
     if not cfg.live:
         # De-dup the dry-run announcement: only fire when the decision changes.
-        sig   = f"{decision.action}:{decision.price}:{now.date()}"
-        state = _load()
-        if state.get("last_dryrun_sig") != sig:
-            state["last_dryrun_sig"] = sig
-            _save(state)
+        if _set_once("last_dryrun_sig", f"{decision.action}:{decision.price}:{now.date()}"):
             events.append(("managed_dryrun", {
                 "ticker": ticker, "decision": decision.action, "price": decision.price,
                 "qty": decision.qty, "label": decision.label, "reason": decision.reason,
@@ -590,6 +670,17 @@ def format_levels_block(cfg: ManagedConfig, position: Optional[dict],
         f"Will buy {cfg.qty} shares if the price dips to about ₹{reentry:,.2f}",
         f"Then aim for ₹{top:,.2f}, exiting to protect near ₹{reentry - cfg.sl_rupees:,.2f}",
     ])
+
+
+def levels_block_from(data: dict) -> Optional[str]:
+    """Build the briefing levels block straight from a ``_refresh()`` data dict,
+    or None when the managed cycle is disabled. Shared by apps/main.py and
+    apps/main_headless.py so the two entry points render identical numbers."""
+    cfg = ManagedConfig.from_env()
+    if not cfg.enabled:
+        return None
+    sma7 = float((data.get("sma7_gap") or {}).get("sma7", 0) or 0)
+    return format_levels_block(cfg, get_position(), sma7, data.get("managed_probs"))
 
 
 def format_managed_event(ticker: str, event_type: str, p: dict) -> Optional[str]:

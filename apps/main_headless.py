@@ -16,7 +16,6 @@ import sys
 import time
 from argparse import ArgumentParser
 from datetime import datetime, timedelta, timezone
-from datetime import time as dtime
 from pathlib import Path
 
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
@@ -45,7 +44,8 @@ def _warn_if_env_world_readable() -> None:
 
 
 from apps.main import _refresh
-from src.emcure import schedule
+from src.emcure import ledger, schedule
+from src.emcure.alert_log import AlertLog
 from src.emcure.predictor import (
     format_eod_summary,
     format_post_open_briefing,
@@ -77,8 +77,6 @@ logging.basicConfig(
 logger = logging.getLogger("main_headless")
 
 _IST = timezone(timedelta(hours=5, minutes=30))
-_MARKET_OPEN = dtime(9, 15)
-_MARKET_CLOSE = dtime(15, 30)
 _WAKEUP_BEFORE_OPEN = timedelta(minutes=10)
 
 
@@ -88,13 +86,7 @@ def _now_ist() -> datetime:
 
 def _is_market_open(now: datetime | None = None) -> bool:
     """Return True if NSE is currently open (Mon–Fri, 9:15–15:30 IST, non-holiday)."""
-    now = now or _now_ist()
-    if now.weekday() >= 5:
-        return False
-    if is_market_holiday(now.date()):
-        return False
-    t = now.time()
-    return _MARKET_OPEN <= t <= _MARKET_CLOSE
+    return schedule.is_market_open(now or _now_ist())
 
 
 def _next_wake_target(now: datetime) -> datetime:
@@ -209,14 +201,8 @@ def _dispatch_alerts(
 
     # Pre-built managed-cycle levels block for the briefings, so every number they
     # show (targets, stop, re-entry) matches what the cycle actually trades.
-    managed_block = None
-    if managed_active:
-        from src.emcure.managed_cycle import ManagedConfig, format_levels_block, get_position
-        _mc_cfg = ManagedConfig.from_env()
-        _mc_sma7 = float((data.get("sma7_gap") or {}).get("sma7", 0) or 0)
-        managed_block = format_levels_block(
-            _mc_cfg, get_position(), _mc_sma7, data.get("managed_probs")
-        )
+    from src.emcure.managed_cycle import levels_block_from
+    managed_block = levels_block_from(data)
 
     def _tg(msg: str) -> None:
         if tg_ready and not _retry_send(send_alert, tg_token, tg_chat_id, msg):
@@ -395,6 +381,9 @@ def _dispatch_alerts(
         if eod_key not in last_alerted:
             q   = data.get("quote", {})
             s7  = data.get("sma7_gap", {})
+            # Real realized numbers from the durable ledger (live trades only) —
+            # previously hardcoded to 0.0 / 0, understating the day at the close.
+            day = ledger.day_stats(now_t.date().isoformat())
             msg = format_eod_summary(
                 ticker       = ticker,
                 open_price   = float(q.get("open",  q.get("price", 0)) or 0),
@@ -407,8 +396,8 @@ def _dispatch_alerts(
                 capital      = capital,
                 risk_rupees  = risk_rupees,
                 prior_losses = data.get("prior_losses", 0),
-                day_pnl      = 0.0,
-                trades_today = 0,
+                day_pnl      = day["pnl"],
+                trades_today = day["trades"],
                 indicators   = data.get("indicators", {}),
                 score_result = data.get("score_result") or {},
                 now          = now_t,
@@ -423,7 +412,8 @@ def _dispatch_alerts(
     # (+₹15/20/30, qty from MANAGED_QTY) and emits its own BUY alert.
     intra_sig = data.get("intra_signal", {})
     if not managed_active and intra_sig.get("action") in ("BUY", "STRONG_BUY"):
-        # Key is date-scoped so a service restart never re-fires within the same day
+        # Date-scoped key; last_alerted is an AlertLog, persisted to disk, so a
+        # mid-day service restart (crash/deploy) cannot re-fire the same alert.
         sig_key  = f"intra_{intra_sig['action']}_{now_t.date()}"
         last_t   = last_alerted.get(sig_key)
         too_soon = last_t and (datetime.now(_IST) - last_t).total_seconds() < 900
@@ -491,11 +481,16 @@ def _dispatch_alerts(
             logger.info("Intraday signal alert sent: %s", intra_sig["action"])
 
     # ── Manual trade T1/T2/T3/SL alerts ──────────────────────────────────────
+    # Never during the pre-open window: the quote's high/low are still LAST
+    # session's there, and while the watermark shields the targets, SL checks
+    # day_low directly — a trade recorded pre-open would get a false "Stop Loss
+    # Hit — exit now" off yesterday's low (same class as the pre-open phantom
+    # sell fixed in the managed cycle).
     q_now     = data.get("quote", {})
     day_high  = float(q_now.get("high", 0) or 0)
     day_low   = float(q_now.get("low",  0) or 0)
     cur_price = float(q_now.get("price", 0) or 0)
-    if cur_price > 0 and day_high > 0:
+    if cur_price > 0 and day_high > 0 and not schedule.in_pre_open(now_t):
         hits = check_and_mark(cur_price, day_high, day_low)
         for hit in hits:
             msg = format_target_alert(ticker, hit, cur_price)
@@ -626,7 +621,9 @@ def main() -> None:
 
     _warn_if_env_world_readable()
     load_sentiment_model()
-    last_alerted: dict = {}
+    # Persistent, date-pruned dedupe map — survives mid-day restarts so a deploy
+    # at 09:10 can't re-send the pre-open briefing or the day's BUY signal.
+    last_alerted: dict = AlertLog(now=_now_ist())
 
     wa_sid   = os.getenv("TWILIO_ACCOUNT_SID", "")
     wa_token = os.getenv("TWILIO_AUTH_TOKEN", "")

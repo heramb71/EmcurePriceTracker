@@ -549,3 +549,72 @@ def test_ensure_stop_replaces_cancelled_stop():
     mc.step("EMCURE", _HOLD_MKT, broker, _cfg(live=True), now=_NOW)
     assert broker.stops                              # a fresh stop was placed
     assert get_position()["stop_order_id"] != "stopX"
+
+
+# ── Regression: session-wide day_low must not stop out a fresh entry ──────────
+# Mirror of the day_high phantom-sell fix: yfinance day_low includes the
+# PRE-ENTRY morning crash. Re-entries happen on dip days by definition, so a raw
+# session low ≤ sl would fire an instant false exit_sl on the first cycle.
+
+def test_low_before_entry_is_ignored():
+    mc.set_position(1000.0, 8, _mcfg())                # sl = 900
+    ev = _dry({"price": 1001.0, "day_high": 1002.0, "day_low": 880.0})  # crash was pre-entry
+    assert "managed_dryrun" not in [e[0] for e in ev]                   # holds, no stop-out
+
+
+def test_low_after_entry_still_stops_out():
+    mc.set_position(1000.0, 8, _mcfg())
+    _dry({"price": 1001.0, "day_high": 1002.0, "day_low": 880.0})       # pre-entry low ignored
+    ev = _dry({"price": 899.0, "day_high": 1002.0, "day_low": 880.0})   # real crash while holding
+    d = [e[1] for e in ev if e[0] == "managed_dryrun"]
+    assert d and d[0]["decision"] == "exit_sl"
+
+
+def test_low_since_entry_tracks_observed_prices():
+    mc.set_position(1000.0, 8, _mcfg())
+    _dry({"price": 905.0, "day_high": 1002.0, "day_low": 880.0})        # dips near (not through) sl
+    pos = mc.get_position()
+    assert pos["low_since_entry"] == 905.0                              # tracked from prices seen
+
+
+# ── EXIT command: queued flag sells at the current price, then expires ────────
+
+def test_exit_request_overrides_hold_and_is_consumed():
+    mc.set_position(1000.0, 8, _mcfg())
+    assert mc.request_exit() is not None
+    ev = _dry({"price": 1004.0, "day_high": 1004.0, "day_low": 1000.0})  # would otherwise hold
+    d = [e[1] for e in ev if e[0] == "managed_dryrun"]
+    assert d and d[0]["decision"] == "sell" and "exit" in d[0]["reason"].lower()
+    # Flag consumed — the next cycle is a normal hold, no repeat sell.
+    ev2 = _dry({"price": 1004.0, "day_high": 1004.0, "day_low": 1000.0})
+    assert "managed_dryrun" not in [e[0] for e in ev2]
+
+
+def test_exit_request_when_flat_sets_nothing():
+    assert mc.request_exit() is None
+    ev = _dry({"price": 1000.0, "day_high": 1000.0, "day_low": 1000.0,
+               "gap": -5, "trend_7d": "Upward"})
+    assert ev == []                                                      # plain wait
+
+
+# ── HALT / RESUME: block re-entries only, exits unaffected ────────────────────
+
+def test_halt_blocks_reentry_until_resume():
+    dip = {"price": 970.0, "day_high": 1000.0, "day_low": 965.0,
+           "gap": -25, "trend_7d": "Choppy"}
+    mc.set_halted(True)
+    ev = _dry(dip)
+    blocked = [e[1] for e in ev if e[0] == "managed_blocked"]
+    assert blocked and "halt" in blocked[0]["reason"].lower()
+    mc.set_halted(False)
+    ev2 = _dry(dip)
+    d = [e[1] for e in ev2 if e[0] == "managed_dryrun"]
+    assert d and d[0]["decision"] == "reenter"
+
+
+def test_halt_never_blocks_an_exit():
+    mc.set_position(1000.0, 8, _mcfg())
+    mc.set_halted(True)
+    ev = _dry({"price": 895.0, "day_high": 1000.0, "day_low": 1000.0})   # live price under stop
+    d = [e[1] for e in ev if e[0] == "managed_dryrun"]
+    assert d and d[0]["decision"] == "exit_sl"

@@ -159,6 +159,27 @@ def _stats(pnls: list[float]) -> dict[str, Any]:
     }
 
 
+def day_stats(day: str) -> dict[str, Any]:
+    """Realized P&L (₹) and closed-trade count for one date (``YYYY-MM-DD``),
+    live trades only — dry-run rows are paper, not money. Feeds the EOD
+    summary's "Day P&L / trades today" line. Never raises: on any failure it
+    reports zeros, mirroring ``log_trade``'s must-not-break contract."""
+    try:
+        conn = connect()
+        try:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(pnl), 0) AS pnl, COUNT(*) AS trades "
+                "FROM trades WHERE dry_run = 0 AND date(closed_at) = ?",
+                (day,),
+            ).fetchone()
+            return {"pnl": round(float(row["pnl"]), 2), "trades": int(row["trades"])}
+        finally:
+            conn.close()
+    except Exception:
+        logger.exception("ledger.day_stats failed for %s", day)
+        return {"pnl": 0.0, "trades": 0}
+
+
 def recent_trades(conn: sqlite3.Connection, limit: int = 10) -> list[dict[str, Any]]:
     """Most recently closed trades, newest first."""
     rows = conn.execute(

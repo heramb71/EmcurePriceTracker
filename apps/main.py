@@ -15,12 +15,9 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 import logging
 import time
 from datetime import datetime
-from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 _IST = ZoneInfo("Asia/Kolkata")
-_MARKET_OPEN_T  = dtime(9, 15)
-_MARKET_CLOSE_T = dtime(15, 30)
 
 from dotenv import load_dotenv
 from rich.live import Live
@@ -63,7 +60,7 @@ from src.emcure.intraday import (
     rupee_targets,
     time_exit_action,
 )
-from src.emcure.managed_cycle import ManagedConfig
+from src.emcure.managed_cycle import ManagedConfig, levels_block_from
 from src.emcure.managed_cycle import get_position as managed_get_position
 from src.emcure.managed_cycle import step as managed_step
 from src.emcure.predictor import (
@@ -132,10 +129,7 @@ def _is_market_open(now: datetime | None = None) -> bool:
     prior-session data: _refresh() is also called from the pre-open briefing and
     the post-close summary, where the day's high/low are last session's — enough
     to fake a 'top target reached' exit before the open."""
-    now = now or datetime.now(_IST)
-    if now.weekday() >= 5 or is_market_holiday(now.date()):
-        return False
-    return _MARKET_OPEN_T <= now.time() <= _MARKET_CLOSE_T
+    return schedule.is_market_open(now or datetime.now(_IST))
 
 
 def _sizing_at_fill(sizing: dict, fill_price: float, filled_qty: int, atr: float) -> dict:
@@ -529,6 +523,13 @@ def main() -> None:
 
             now_t = datetime.now(_IST)
 
+            # Mirror main_headless: when the managed cycle owns the symbol,
+            # suppress the legacy intraday/time-exit/score alerts (they quote
+            # +₹10/20/25 levels and a Supertrend panel that no longer trade) and
+            # embed the managed levels block in every briefing instead.
+            managed_active = os.getenv("MANAGED_CYCLE", "false").lower() == "true"
+            managed_block  = levels_block_from(data) if data else None
+
             # ── Holiday check (9:00–9:14 AM, once per day) ───────────────────
             if wa_ready and schedule.in_pre_open(now_t):
                 holiday_key = f"holiday_{now_t.date()}"
@@ -562,6 +563,7 @@ def main() -> None:
                         sentiment_label= data.get("news_sent_label", "Neutral"),
                         sentiment_score= data.get("news_sent_score", 0.0),
                         now            = now_t,
+                        managed_block  = managed_block,
                     )
                     send_whatsapp_alert(
                         TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
@@ -587,6 +589,7 @@ def main() -> None:
                         risk_rupees   = RISK_RUPEES,
                         prior_losses  = data.get("prior_losses", 0),
                         now           = now_t,
+                        managed_block = managed_block,
                     )
                     send_whatsapp_alert(
                         TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
@@ -616,6 +619,7 @@ def main() -> None:
                         day_pnl       = 0.0,
                         trades_today  = 0,
                         now           = now_t,
+                        managed_block = managed_block,
                     )
                     send_whatsapp_alert(
                         TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
@@ -625,8 +629,10 @@ def main() -> None:
                     last_alerted[eod_key] = now_t
 
             # ── Dispatch intraday entry signal alert ──────────────────────────
+            # Suppressed under the managed cycle — it emits its own BUY alert
+            # with the +₹15/20/30 ladder, not the legacy +₹10/20/25 plan.
             intra_sig = data.get("intra_signal", {})
-            if intra_sig.get("action") in ("BUY", "STRONG_BUY"):
+            if not managed_active and intra_sig.get("action") in ("BUY", "STRONG_BUY"):
                 sig_key  = f"intra_{intra_sig['action']}"
                 last_t   = last_alerted.get(sig_key)
                 too_soon = (
@@ -690,11 +696,13 @@ def main() -> None:
                     last_alerted[sig_key] = datetime.now(_IST)
 
             # ── Manual trade: T1 / T2 / T3 / SL alerts ──────────────────────
+            # Skipped pre-open: the quote's high/low are last session's, and SL
+            # checks day_low directly — same false-alert class fixed in headless.
             q_now     = data.get("quote", {})
             day_high  = float(q_now.get("high", 0) or 0)
             day_low   = float(q_now.get("low",  0) or 0)
             cur_price = float(q_now.get("price", 0) or 0)
-            if cur_price > 0 and day_high > 0:
+            if cur_price > 0 and day_high > 0 and not schedule.in_pre_open(now_t):
                 hits = check_and_mark(cur_price, day_high, day_low)
                 for hit in hits:
                     msg = format_target_alert(TICKER, hit, cur_price)
@@ -706,8 +714,10 @@ def main() -> None:
                         )
 
             # ── Dispatch time-based exit alert ────────────────────────────────
+            # Suppressed under the managed cycle — time_action is computed from
+            # the inactive Supertrend position; the managed cycle owns exits.
             time_act = data.get("time_action")
-            if time_act and wa_ready:
+            if time_act and wa_ready and not managed_active:
                 ta_key  = f"time_{time_act['action']}"
                 last_t  = last_alerted.get(ta_key)
                 too_soon = last_t and (datetime.now(_IST) - last_t).total_seconds() < 3600
@@ -735,9 +745,11 @@ def main() -> None:
                 )
 
             # ── Dispatch strong score alerts (existing behaviour) ─────────────
+            # Suppressed under the managed cycle — the WhatsApp panel embeds a
+            # Supertrend strategy block that no longer trades.
             score_result = data.get("score_result")
             quote = data.get("quote")
-            if score_result and quote and should_alert(score_result, last_alerted):
+            if score_result and quote and not managed_active and should_alert(score_result, last_alerted):
                 alerted = False
 
                 if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
@@ -782,6 +794,11 @@ def main() -> None:
                     msg = format_position_close_alert(
                         TICKER, payload["trade"], payload["reason"]
                     )
+                elif event_type.startswith("managed_"):
+                    from src.emcure.managed_cycle import format_managed_event
+                    msg = format_managed_event(TICKER, event_type, payload)
+                    if msg is None:
+                        continue
                 else:
                     continue
 

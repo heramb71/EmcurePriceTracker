@@ -59,3 +59,33 @@ def test_due_none_outside_windows():
 
 def test_daily_key_is_per_date():
     assert schedule.daily_key("eod", _t(15, 40)) == "eod_2026-07-03"
+
+
+# ── is_market_open: the one shared session predicate ─────────────────────────
+
+def _no_holidays(monkeypatch):
+    monkeypatch.setattr(schedule, "is_market_holiday", lambda d: False)
+
+
+def test_is_market_open_during_session(monkeypatch):
+    _no_holidays(monkeypatch)
+    assert schedule.is_market_open(_t(9, 15))
+    assert schedule.is_market_open(_t(12, 0))
+    assert schedule.is_market_open(_t(15, 30))
+
+
+def test_is_market_open_outside_session(monkeypatch):
+    _no_holidays(monkeypatch)
+    assert not schedule.is_market_open(_t(9, 14))
+    assert not schedule.is_market_open(_t(15, 31))
+
+
+def test_is_market_open_weekend(monkeypatch):
+    _no_holidays(monkeypatch)
+    assert not schedule.is_market_open(datetime(2026, 7, 4, 10, 0))   # Saturday
+    assert not schedule.is_market_open(datetime(2026, 7, 5, 10, 0))   # Sunday
+
+
+def test_is_market_open_holiday(monkeypatch):
+    monkeypatch.setattr(schedule, "is_market_holiday", lambda d: True)
+    assert not schedule.is_market_open(_t(10, 0))

@@ -14,6 +14,9 @@ touch the clock, so they unit-test directly.
 from __future__ import annotations
 
 from datetime import datetime
+from datetime import time as dtime
+
+from src.shared.holidays import is_market_holiday
 
 # Alert kinds (also the prefix of their per-day dedupe key).
 PRE_OPEN = "pre_open"
@@ -29,6 +32,22 @@ _POST_OPEN_HOUR = 9
 _POST_OPEN_MIN_MINUTE = 20  # [09:20, 10:00)
 _EOD_HOUR = 15
 _EOD_MIN_MINUTE = 30        # [15:30, 16:00)
+
+# NSE session boundaries (IST wall-clock).
+_MARKET_OPEN_T = dtime(9, 15)
+_MARKET_CLOSE_T = dtime(15, 30)
+
+
+def is_market_open(now: datetime) -> bool:
+    """True during the live NSE session: Mon–Fri, 09:15–15:30 IST, non-holiday.
+
+    The one market-open predicate — previously re-implemented (with drift: the
+    dashboard's copy forgot holidays) in main.py, main_headless.py, watchdog.py
+    and bot_server.py.
+    """
+    if now.weekday() >= 5 or is_market_holiday(now.date()):
+        return False
+    return _MARKET_OPEN_T <= now.time() <= _MARKET_CLOSE_T
 
 
 def in_pre_open(now: datetime) -> bool:

@@ -69,8 +69,21 @@ def _handle_buy(parts: list[str]) -> str:
         entry = float(parts[1])
     except ValueError:
         return "❌ Invalid price.\nExample: BUY 1693"
+    if entry <= 0:
+        return "❌ Price must be positive.\nExample: BUY 1693"
 
-    qty   = int(parts[2]) if len(parts) > 2 else int(CAPITAL / entry)
+    if len(parts) > 2:
+        try:
+            qty = int(parts[2])
+        except ValueError:
+            return "❌ Invalid qty.\nExample: BUY 1693 60"
+    else:
+        qty = int(CAPITAL / entry)
+    if qty <= 0:
+        return (
+            f"❌ Qty works out to 0 — ₹{entry:,.0f} exceeds CAPITAL ₹{CAPITAL:,.0f}.\n"
+            f"Pass it explicitly: BUY {parts[1]} <qty>"
+        )
     state = set_trade(entry, qty, RISK_RUPEES)
 
     return (
@@ -91,26 +104,38 @@ def _handle_sell(parts: list[str]) -> str:
     if not trade:
         return "No active trade to close."
 
-    price    = _live_price()
-    pnl_data = current_pnl(price) if price > 0 else None
-    clear_trade()
-
-    if pnl_data and price > 0:
-        ledger.log_trade(
-            strategy="manual", ticker=TICKER, qty=pnl_data["qty"],
-            entry_price=pnl_data["entry"], exit_price=price,
-            pnl=pnl_data["pnl"], exit_reason="manual",
-            opened_at=trade.get("opened_at"),
-        )
+    # SELL [price] — an explicit price closes at that price; otherwise use the
+    # live quote. If neither is available the trade is NOT closed: silently
+    # clearing it would drop the round-trip from the P&L ledger.
+    if len(parts) > 1:
+        try:
+            price = float(parts[1])
+        except ValueError:
+            return "❌ Invalid price.\nUsage: SELL [price]"
+    else:
+        price = _live_price()
+    if price <= 0:
         return (
-            f"✅ Trade closed — {TICKER}.NS\n"
-            f"\n"
-            f"Entry  ₹{pnl_data['entry']:,.2f}\n"
-            f"Exit   ₹{price:,.2f}  ({pnl_data['pnl_per']:+.2f}/sh)\n"
-            f"Qty    {pnl_data['qty']} sh\n"
-            f"P&L    ₹{pnl_data['pnl']:+,.0f}"
+            "❌ Couldn't fetch a live price — trade NOT closed.\n"
+            "Try again in a minute, or close at a known price: SELL <price>"
         )
-    return "✅ Trade closed."
+
+    pnl_data = current_pnl(price)
+    clear_trade()
+    ledger.log_trade(
+        strategy="manual", ticker=TICKER, qty=pnl_data["qty"],
+        entry_price=pnl_data["entry"], exit_price=price,
+        pnl=pnl_data["pnl"], exit_reason="manual",
+        opened_at=trade.get("opened_at"),
+    )
+    return (
+        f"✅ Trade closed — {TICKER}.NS\n"
+        f"\n"
+        f"Entry  ₹{pnl_data['entry']:,.2f}\n"
+        f"Exit   ₹{price:,.2f}  ({pnl_data['pnl_per']:+.2f}/sh)\n"
+        f"Qty    {pnl_data['qty']} sh\n"
+        f"P&L    ₹{pnl_data['pnl']:+,.0f}"
+    )
 
 
 def _handle_status(parts: list[str]) -> str:
@@ -207,8 +232,11 @@ def _handle_help(parts: list[str]) -> str:
         f"\n"
         f"BUY <price>        record entry\n"
         f"BUY <price> <qty>  with custom qty\n"
-        f"SELL               close trade\n"
+        f"SELL [price]       close manual trade\n"
         f"STATUS             live P&L\n"
+        f"EXIT               sell the managed position\n"
+        f"HALT               pause managed re-entries\n"
+        f"RESUME             re-enable managed re-entries\n"
         f"KITE               check auto-trading status\n"
         f"CRYPTO             BTC/ETH summary\n"
         f"TOKEN <token>      complete Kite daily auth\n"
@@ -217,6 +245,48 @@ def _handle_help(parts: list[str]) -> str:
         f"Auto-trading: {auto}\n"
         f"Example: BUY 1693"
     )
+
+
+def _managed_enabled() -> bool:
+    return os.getenv("MANAGED_CYCLE", "false").lower() == "true"
+
+
+def _handle_exit(parts: list[str]) -> str:
+    """Queue a managed-cycle exit — the tracker sells on its next step. Before
+    this, the only way to close the managed position from the phone was to sell
+    in Zerodha and wait for the external-close reconcile."""
+    if not _managed_enabled():
+        return "Managed cycle is not enabled (MANAGED_CYCLE=false) — nothing to exit."
+    from src.emcure.managed_cycle import request_exit
+    pos = request_exit()
+    if not pos:
+        return "Managed cycle is flat — no position to exit."
+    return (
+        f"🛑 EXIT queued — {TICKER}\n"
+        f"The tracker will sell {pos['qty']} shares (entry ₹{pos['entry']:,.2f}) "
+        f"at the current price on its next cycle (within ~5 min). "
+        f"You'll get the usual Sold alert when it's done."
+    )
+
+
+def _handle_halt(parts: list[str]) -> str:
+    if not _managed_enabled():
+        return "Managed cycle is not enabled (MANAGED_CYCLE=false) — nothing to halt."
+    from src.emcure.managed_cycle import get_position, set_halted
+    set_halted(True)
+    note = (
+        "The open position stays managed — targets and stop still act; only new buys stop."
+        if get_position() else "No position is open."
+    )
+    return f"⏸️ Managed cycle HALTED — no new buys until you send RESUME.\n{note}"
+
+
+def _handle_resume(parts: list[str]) -> str:
+    if not _managed_enabled():
+        return "Managed cycle is not enabled (MANAGED_CYCLE=false)."
+    from src.emcure.managed_cycle import set_halted
+    set_halted(False)
+    return "▶️ Managed cycle resumed — re-entries are allowed again."
 
 
 def _handle_kite(parts: list[str]) -> str:
@@ -284,6 +354,9 @@ _HANDLERS = {
     "BUY":    _handle_buy,
     "SELL":   _handle_sell,
     "STATUS": _handle_status,
+    "EXIT":   _handle_exit,
+    "HALT":   _handle_halt,
+    "RESUME": _handle_resume,
     "CRYPTO": _handle_crypto,
     "HELP":   _handle_help,
     "TOKEN":  _handle_token,
@@ -411,12 +484,13 @@ def _dashboard_context() -> dict:
     """Assemble the read-only dashboard context from live sources."""
     from datetime import datetime, timedelta, timezone
 
+    from src.emcure import schedule
     from src.emcure.managed_cycle import get_position as managed_get_position
     from src.shared import heartbeat
 
     ist = timezone(timedelta(hours=5, minutes=30))
     now = datetime.now(ist)
-    market_open = now.weekday() < 5 and (9, 15) <= (now.hour, now.minute) <= (15, 30)
+    market_open = schedule.is_market_open(now)
 
     price = _live_price()
     position = None
@@ -488,4 +562,6 @@ if __name__ == "__main__":
     print(f"   Telegram: {'configured' if TELEGRAM_TOKEN else 'OFF'}")
     print(f"   Commands: BUY <price>, SELL, STATUS, HELP\n")
     _start_telegram_bot()
-    app.run(host="127.0.0.1", port=port, debug=False)
+    # threaded=True: a slow handler (CRYPTO/STATUS do multi-second yfinance
+    # fetches) must not stall a concurrent Twilio webhook past its ~15s timeout.
+    app.run(host="127.0.0.1", port=port, debug=False, threaded=True)

@@ -18,21 +18,18 @@ import logging
 import os
 import sys
 from datetime import datetime, timedelta, timezone
-from datetime import time as dtime
 
 from dotenv import load_dotenv
 
+from src.emcure import schedule
 from src.notify import channels
 from src.notify.alerts import send_alert
 from src.shared.heartbeat import age_seconds, last_beat
-from src.shared.holidays import is_market_holiday
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("watchdog")
 
 _IST = timezone(timedelta(hours=5, minutes=30))
-_MARKET_OPEN = dtime(9, 15)
-_MARKET_CLOSE = dtime(15, 30)
 
 # Default threshold: comfortably above the ~5-min refresh so a single slow cycle
 # never trips a false alarm, but tight enough to catch a real wedge fast.
@@ -45,10 +42,7 @@ def _now_ist() -> datetime:
 
 def is_market_hours(now: datetime | None = None) -> bool:
     """True on a trading day between the open and close (IST)."""
-    now = now or _now_ist()
-    if now.weekday() >= 5 or is_market_holiday(now.date()):
-        return False
-    return _MARKET_OPEN <= now.time() <= _MARKET_CLOSE
+    return schedule.is_market_open(now or _now_ist())
 
 
 def evaluate(age: float | None, in_hours: bool, threshold: float) -> str | None:

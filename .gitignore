@@ -33,6 +33,7 @@ htmlcov/
 # Runtime state
 strategy_state.json
 trade_state.json
+alerts_sent.json
 radar.db
 radar.db-wal
 radar.db-shm

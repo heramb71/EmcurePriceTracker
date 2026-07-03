@@ -115,9 +115,15 @@ Send to **+14155238886** (Twilio sandbox):
 |---------|--------|
 | `BUY 1693` | Record entry at ₹1693, auto-compute qty from CAPITAL |
 | `BUY 1693 60` | Record entry with explicit qty |
-| `SELL` | Close trade, show final P&L |
+| `SELL` | Close manual trade at the live price, show final P&L |
+| `SELL 1710` | Close at an explicit price (fallback when the live quote fails) |
 | `STATUS` | Live P&L + level progress |
+| `EXIT` | Queue a managed-cycle sell — the tracker exits the position on its next cycle |
+| `HALT` | Pause managed-cycle re-entries (exits still act) until `RESUME` |
+| `RESUME` | Re-enable managed-cycle re-entries |
 | `HELP` | Command list |
+
+Same commands work on the emcure Telegram bot (`/status`, `/exit`, …).
 
 ---
 
@@ -220,8 +226,18 @@ python -m apps.watchdog
   renderer in `src/emcure/dashboard_web.py`.
 - **CI gate** — `.github/workflows/ci.yml` runs pytest + ruff on every push/PR; the deploy
   workflow's `deploy` job `needs: test`, so a failing suite blocks production.
-- **Scheduled-alert windows** — the pre-open/post-open/EOD window boundaries live only in
-  `src/emcure/schedule.py` (pure predicates), consumed by both `main.py` and `main_headless.py`.
+- **Scheduled-alert windows** — the pre-open/post-open/EOD window boundaries AND the
+  market-open predicate (`schedule.is_market_open`, weekday + holiday + 9:15–15:30) live only in
+  `src/emcure/schedule.py` (pure predicates), consumed by `main.py`, `main_headless.py`,
+  `watchdog.py`, and the `/dashboard`.
+- **Persistent alert dedupe** — `src/emcure/alert_log.py` (`alerts_sent.json`, gitignored)
+  write-through persists the tracker's `last_alerted` map and prunes previous days on load, so a
+  mid-day restart/deploy can't re-send the pre-open briefing or the day's BUY signal. The EOD
+  summary's Day P&L / trades-today come from `ledger.day_stats` (live trades only).
+- **Remote managed-cycle control** — `EXIT` queues a sell (flag in `managed_state.json`,
+  consumed by the tracker's next step), `HALT`/`RESUME` gate re-entries via `reentry_blocked`.
+  `managed_state.json` therefore has two writers (tracker + bot_server), so every mutation in
+  `managed_cycle.py` holds the `fcntl.flock` guard, like `trade_state.json`.
 - **Lint/format** — `pyproject.toml` configures ruff (`ruff check src apps tests`); deps are
   range-capped in `requirements-core.txt` to stop breaking majors (e.g. yfinance) on fresh deploys.
 
