@@ -275,7 +275,6 @@ class NewsMonitor:
         now    = datetime.utcnow()
         t4     = now - timedelta(hours=4)
         t8     = now - timedelta(hours=8)
-        cutoff = now - timedelta(hours=WINDOW_HOURS)
 
         arts_recent = [a for a in self._articles if a["fetched_at"] >= t4]
         arts_prior  = [a for a in self._articles if t8 <= a["fetched_at"] < t4]

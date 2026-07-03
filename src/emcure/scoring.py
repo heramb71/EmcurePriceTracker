@@ -31,7 +31,6 @@ def _build_feature_matrix(df: pd.DataFrame) -> pd.DataFrame:
 
     sma20 = close.rolling(20).mean()
     std20 = close.rolling(20).std()
-    bb_range = (2 * std20 * 2).replace(0, np.nan)  # upper - lower = 4*std
     bb_pct = ((close - (sma20 - 2 * std20)) / (4 * std20.replace(0, np.nan))).clip(0.0, 1.0)
 
     ema20 = close.ewm(span=20, adjust=False).mean()

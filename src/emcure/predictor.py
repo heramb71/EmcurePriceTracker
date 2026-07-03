@@ -376,7 +376,6 @@ def format_post_open_briefing(
     qty          = int(capital / current_price) if current_price > 0 else 0
     pred         = predict_trade(gap, atr, prior_losses, qty, risk_rupees, now)
     buy_zone     = round(sma7 - 20, 2)
-    strong_zone  = round(sma7 - 25, 2)
 
     signal_emoji = (
         "🔔🔔" if pred["score"] >= 75 and gap <= -20 else
@@ -477,16 +476,9 @@ def format_eod_summary(
     score_result = score_result or {}
     gap          = close - sma7
     change_emoji = "🟢" if change_pct >= 0 else "🔴"
-    candle_emoji = "🕯️"
-    if close > open_price and (high - low) > 0:
-        body_pct = (close - open_price) / (high - low)
-        candle_emoji = "🟢" if body_pct > 0.5 else "📊"
-    elif close < open_price:
-        candle_emoji = "🔴"
 
     # Tomorrow's entry zones based on today's close and SMA7
     buy_zone    = round(sma7 - 20, 2)
-    strong_zone = round(sma7 - 25, 2)
 
     # Quick tomorrow prediction using today's close vs SMA7
     qty  = int(capital / close) if close > 0 else 0

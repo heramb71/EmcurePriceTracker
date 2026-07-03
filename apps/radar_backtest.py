@@ -157,7 +157,8 @@ def _group(title, rows, key, label_fn=lambda k: k):
 def _report(records: list[dict]) -> None:
     print("═" * 78)
     if not records:
-        print("No gated alerts over the window."); return
+        print("No gated alerts over the window.")
+        return
     print(_line("OVERALL", _stats(records)).strip())
     print(f"(net expectancy = gross − {ROUND_TRIP_COST_PCT}% round-trip cost; "
           f"forward window = {FORWARD_DAYS} trading days)\n")

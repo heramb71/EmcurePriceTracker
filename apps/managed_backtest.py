@@ -142,7 +142,8 @@ def main():
     print("Fetching ~6 months of EMCURE daily data from yfinance…")
     df = fetch_daily("EMCURE", days=DAYS)
     if df is None or df.empty:
-        print("ERROR: no data"); sys.exit(1)
+        print("ERROR: no data")
+        sys.exit(1)
     df = df.sort_values("date").reset_index(drop=True)
     start, end = pd.to_datetime(df.date.iloc[0]).date(), pd.to_datetime(df.date.iloc[-1]).date()
     print(f"Data: {len(df)} trading days  {start} → {end}")
@@ -157,7 +158,8 @@ def main():
         print(f"SCENARIO: {name}   targets={TARGETS}  reentry_gap=₹{REENTRY_GAP:.0f}")
         print("=" * 70)
         if r["n"] == 0:
-            print("No trades triggered."); continue
+            print("No trades triggered.")
+            continue
         print(f"Trades:           {r['n']}   "
               f"(target-sells={r['target_sells']}, stops={r['stops']})")
         print(f"Win rate:         {r['win_rate']:.0f}%  "

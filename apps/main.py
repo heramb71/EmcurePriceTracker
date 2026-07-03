@@ -600,8 +600,6 @@ def main() -> None:
                 if eod_key not in last_alerted:
                     q   = data.get("quote", {})
                     s7  = data.get("sma7_gap", {})
-                    from src.emcure.trade_manager import get_trade
-                    active = get_trade()
                     eod_msg = format_eod_summary(
                         ticker        = TICKER,
                         open_price    = float(q.get("open",  q.get("price", 0)) or 0),

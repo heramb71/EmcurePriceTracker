@@ -27,6 +27,7 @@ from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+from src.emcure import ledger
 from src.emcure.state import load_state
 from src.emcure.trade_manager import clear_trade, current_pnl, get_trade, set_trade
 from src.notify import channels
@@ -95,7 +96,12 @@ def _handle_sell(parts: list[str]) -> str:
     clear_trade()
 
     if pnl_data and price > 0:
-        sign = "+" if pnl_data["pnl"] >= 0 else ""
+        ledger.log_trade(
+            strategy="manual", ticker=TICKER, qty=pnl_data["qty"],
+            entry_price=pnl_data["entry"], exit_price=price,
+            pnl=pnl_data["pnl"], exit_reason="manual",
+            opened_at=trade.get("opened_at"),
+        )
         return (
             f"✅ Trade closed — {TICKER}.NS\n"
             f"\n"

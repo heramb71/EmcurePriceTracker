@@ -17,11 +17,6 @@ ignore = [
     "F541",  # f-string without placeholders — used for uniform alert-block styling
     "E701",  # multiple statements on one line (colon) — compact guards
     "E731",  # lambda assignment — a few tiny inline helpers
-    # Ratcheted off for now — pre-existing dead assignments scattered across
-    # research tools + the soon-to-be-deleted apps/emcure_tracker.py. Phase 3
-    # code-health pass cleans these and re-enables both.
-    "F841",  # local variable assigned but never used
-    "E702",  # multiple statements on one line (semicolon)
 ]
 
 [tool.ruff.lint.per-file-ignores]
