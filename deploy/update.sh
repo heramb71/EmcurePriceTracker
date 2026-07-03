@@ -70,6 +70,13 @@ info "Refreshing Python dependencies (core) ..."
 sudo -u "$APP_USER" "$VENV/bin/pip" install --quiet --upgrade pip
 sudo -u "$APP_USER" "$VENV/bin/pip" install --quiet -r "$APP_DIR/requirements-core.txt"
 
+# ── 2b. dead-man's-switch watchdog (oneshot service + timer) ──────────────────
+# Installed explicitly (not a long-running service) so the tracker's heartbeat
+# is always watched. The timer self-gates to market hours, so it's cheap.
+info "Installing watchdog timer ..."
+install -m 644 "$APP_DIR/deploy/watchdog.service" /etc/systemd/system/emcure-watchdog.service
+install -m 644 "$APP_DIR/deploy/watchdog.timer"   /etc/systemd/system/emcure-watchdog.timer
+
 # ── 3. discover this project's services (name-agnostic, by WorkingDirectory) ──
 mapfile -t UNITS < <(grep -lFx "WorkingDirectory=$APP_DIR" /etc/systemd/system/*.service 2>/dev/null || true)
 [[ ${#UNITS[@]} -gt 0 ]] || die "No services found running from $APP_DIR — run the first-time setup script."
@@ -77,6 +84,9 @@ mapfile -t UNITS < <(grep -lFx "WorkingDirectory=$APP_DIR" /etc/systemd/system/*
 SERVICES=()
 for unit in "${UNITS[@]}"; do
   svc=$(basename "$unit" .service)
+  # The watchdog is a oneshot (fired by its timer) — never restart it as a
+  # long-running service or health-check it for `active`, which it never is.
+  [[ "$svc" == *watchdog* ]] && continue
   SERVICES+=("$svc")
   app=$(extract_app "$unit")
   src="${UNIT_SRC[$app]:-}"
@@ -94,6 +104,7 @@ info "Services: ${SERVICES[*]}"
 # ── 4. reload + restart ───────────────────────────────────────────────────────
 info "Reloading systemd and restarting services ..."
 systemctl daemon-reload
+systemctl enable --now emcure-watchdog.timer >/dev/null 2>&1 || warn "watchdog timer not enabled"
 systemctl restart "${SERVICES[@]}"
 sleep 3
 

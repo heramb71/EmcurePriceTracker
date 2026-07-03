@@ -64,6 +64,7 @@ from src.notify.alerts import (
     send_alert,
     send_whatsapp_alert,
 )
+from src.shared import heartbeat
 from src.shared.holidays import format_holiday_alert, is_market_holiday
 
 logging.basicConfig(
@@ -726,6 +727,7 @@ def main() -> None:
         # above and re-sending the "auto-trading ACTIVE" announcement on loop.
         try:
             now = _now_ist()
+            heartbeat.beat("emcure-tracker")  # dead-man's-switch (apps/watchdog.py)
 
             # The pre-open briefing and the holiday notice both run in the 9:00–9:14
             # window — before the open — so they live here, outside the

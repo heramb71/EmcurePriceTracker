@@ -1,0 +1,17 @@
+[Unit]
+Description=EMCURE tracker dead-man's-switch (alerts if the heartbeat goes stale)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=emcure
+Group=emcure
+WorkingDirectory=/opt/emcure
+ExecStart=/opt/emcure/venv/bin/python3 -m apps.watchdog
+EnvironmentFile=/opt/emcure/.env
+Environment=PYTHONUNBUFFERED=1
+# Threshold before the tracker is declared stalled (default 900s / 15 min).
+# Environment=WATCHDOG_STALE_SECONDS=900
+StandardOutput=append:/var/log/emcure/watchdog.log
+StandardError=append:/var/log/emcure/watchdog.err
