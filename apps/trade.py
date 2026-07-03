@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from src.emcure import ledger
 from src.emcure.trade_manager import clear_trade, current_pnl, get_trade, set_trade
 
 CAPITAL     = float(os.getenv("CAPITAL", "100000"))
@@ -72,11 +73,26 @@ def cmd_sell(args: list[str]) -> None:
     pnl_data = current_pnl(price) if price > 0 else None
     clear_trade()
 
+    if pnl_data and price > 0:
+        ledger.log_trade(
+            strategy="manual", ticker=TICKER, qty=pnl_data["qty"],
+            entry_price=pnl_data["entry"], exit_price=price,
+            pnl=pnl_data["pnl"], exit_reason="manual",
+            opened_at=trade.get("opened_at"),
+        )
+
     print(f"\n✅ Trade closed — {TICKER}.NS")
     if pnl_data and price > 0:
         print(f"   Entry  ₹{pnl_data['entry']:,.2f}")
         print(f"   Exit   ₹{price:,.2f}  ({round(price - pnl_data['entry'], 2):+.2f}/sh)")
         print(f"   P&L    ₹{pnl_data['pnl']:+,.0f}")
+    print()
+
+
+def cmd_report(args: list[str]) -> None:
+    """Print the durable P&L ledger: win-rate, profit-factor, expectancy."""
+    print()
+    print(ledger.format_report())
     print()
 
 
@@ -196,7 +212,7 @@ def cmd_track(args: list[str]) -> None:
 
 COMMANDS = {
     "buy": cmd_buy, "sell": cmd_sell, "status": cmd_status,
-    "holding": cmd_holding, "track": cmd_track,
+    "holding": cmd_holding, "track": cmd_track, "report": cmd_report,
 }
 
 
@@ -207,6 +223,7 @@ def main() -> None:
         print("       python -m apps.trade status")
         print("       python -m apps.trade holding")
         print("       python -m apps.trade track <entry> <qty> <sl> <t1> <t2> <t3>")
+        print("       python -m apps.trade report")
         sys.exit(1)
 
     COMMANDS[sys.argv[1]](sys.argv[2:])
