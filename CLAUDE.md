@@ -191,10 +191,39 @@ HEADLESS=true python -m apps.main_headless
 python -m apps.trade buy 1693
 python -m apps.trade sell
 python -m apps.trade status
+python -m apps.trade report      # P&L ledger: win-rate / profit-factor / expectancy
 
-# WhatsApp bot (local dev with ngrok)
+# WhatsApp bot (local dev with ngrok) — also serves GET /dashboard (read-only ops page)
 ./start_bot.sh
+
+# Dead-man's-switch check (alerts if the tracker's heartbeat is stale in market hours)
+python -m apps.watchdog
 ```
+
+---
+
+## Reliability & Observability
+
+- **Atomic state writes** — all runtime JSON (`trade_state.json`, `managed_state.json`,
+  `strategy_state.json`) goes through `src/shared/atomic_json.py` (temp + fsync + `os.replace`,
+  plus an `fcntl.flock` guard on `trade_state.json` since both `bot_server` and `main_headless`
+  write it). A crash/race mid-write can no longer truncate state and erase a live position.
+- **Heartbeat + watchdog** — `main_headless` writes `src/shared/heartbeat.py` each loop;
+  `apps/watchdog.py` (a `oneshot` on the `emcure-watchdog.timer`, every 5 min, self-gated to
+  market hours) alarms on the emcure Telegram bot if the heartbeat goes stale. `update.sh`
+  installs/enables the timer automatically.
+- **Durable P&L ledger** — `src/emcure/ledger.py` (SQLite `emcure.db`, WAL, gitignored) records
+  one row per closed round-trip. Managed exits log via `_record_exit`; manual sells via
+  `apps/trade.py` + `bot_server`. `python -m apps.trade report` prints the analytics.
+- **Web dashboard** — `GET /dashboard` on `bot_server` (gated by `HEALTH_API_KEY` in prod, open
+  in local dev) renders heartbeat status, open position + live P&L, and ledger stats. Pure
+  renderer in `src/emcure/dashboard_web.py`.
+- **CI gate** — `.github/workflows/ci.yml` runs pytest + ruff on every push/PR; the deploy
+  workflow's `deploy` job `needs: test`, so a failing suite blocks production.
+- **Scheduled-alert windows** — the pre-open/post-open/EOD window boundaries live only in
+  `src/emcure/schedule.py` (pure predicates), consumed by both `main.py` and `main_headless.py`.
+- **Lint/format** — `pyproject.toml` configures ruff (`ruff check src apps tests`); deps are
+  range-capped in `requirements-core.txt` to stop breaking majors (e.g. yfinance) on fresh deploys.
 
 ---
 
