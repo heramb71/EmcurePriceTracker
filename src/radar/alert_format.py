@@ -116,51 +116,44 @@ def format_eod_stock(
     change_pct = (
         (close - snap.prev_close) / snap.prev_close * 100 if snap.prev_close else 0.0
     )
-    change_emoji = "🟢" if change_pct >= 0 else "🔴"
-
-    gap = snap.gap_to_sma7  # price - sma7 (negative = below the average)
-    gap_frac = gap / snap.price if snap.price else 0.0
+    emoji = "🟢" if change_pct >= 0 else "🔴"
+    gap_frac = snap.gap_to_sma7 / snap.price if snap.price else 0.0
     watch_zone = round(snap.sma7 * (1 - _WATCH_FRAC), 2)
-    strong_zone = round(snap.sma7 * (1 - _STRONG_FRAC), 2)
-    setup_signal = (
-        "🔔 SETUP FORMING" if gap_frac <= -_WATCH_FRAC else
-        "👀 WATCH ZONE"    if gap_frac <= -_WATCH_FRAC / 2 else
-        "⏳ TOO FAR — above the average, wait" if gap_frac > 0 else
-        "📊 Near the 7-day average"
-    )
 
-    lines = [
-        f"🌆 {snap.stock} — End of Day Summary",
-        f"📅 {now.strftime('%a, %d %b %Y')}",
-        "",
-        f"Opened:  ₹{snap.open:,.2f}",
-        f"Highest: ₹{snap.day_high:,.2f}",
-        f"Lowest:  ₹{snap.day_low:,.2f}",
-        f"Closed:  ₹{close:,.2f}  {change_emoji} {change_pct:+.2f}%",
-        "",
-        "📊 Today's Market Conditions:",
-        _rsi_line(snap.rsi),
-        _macd_line(snap.macd_hist),
-        _regime_line(regime),
-        "",
-        "── Tomorrow's Outlook ──",
-        setup_signal,
-    ]
-
-    if gap_frac <= -_WATCH_FRAC / 2:
-        lines += [
-            f"Trading {abs(gap_frac) * 100:.1f}% below its 7-day average — reversion zone.",
-            f"Radar watch zone: ₹{watch_zone:,.2f} or below",
-            f"Strong zone: ₹{strong_zone:,.2f} or below",
-        ]
+    # One plain-English line on how the day looked (no RSI/MACD jargon).
+    if snap.rsi >= 55 and snap.macd_hist > 0:
+        mood = "Looking strong 📈"
+    elif snap.rsi <= 35:
+        mood = "Beaten down — could bounce back 🔄"
+    elif snap.macd_hist > 0:
+        mood = "Ticking upward"
     else:
-        lines.append(
-            f"7-day average ₹{snap.sma7:,.2f} — radar watches ₹{watch_zone:,.2f} or below "
-            f"({_WATCH_FRAC * 100:.1f}% dip)."
-        )
+        mood = "Soft / drifting"
 
-    lines += ["", _FOOTER]
-    return "\n".join(lines)
+    # What the radar is watching for tomorrow, in plain words.
+    if gap_frac <= -_WATCH_FRAC:
+        tomorrow = "🔔 In the radar's buy zone right now"
+        watch = f"Radar would buy on a dip to about ₹{watch_zone:,.2f} or lower."
+    elif gap_frac <= -_WATCH_FRAC / 2:
+        tomorrow = "👀 Getting close to a buy"
+        watch = f"Radar buys if it dips to ₹{watch_zone:,.2f} or lower."
+    elif gap_frac > 0:
+        tomorrow = "⏳ Above its average — no buy yet"
+        watch = f"Radar buys only if it dips to ₹{watch_zone:,.2f} or lower."
+    else:
+        tomorrow = "📊 Near its average"
+        watch = f"Radar buys if it dips to ₹{watch_zone:,.2f} or lower."
+
+    return "\n".join([
+        f"🌆 *{snap.stock} — end of day*  ·  {now.strftime('%a, %d %b')}",
+        f"Closed ₹{close:,.2f}  {emoji} {change_pct:+.2f}%   (day ₹{snap.day_low:,.2f}–₹{snap.day_high:,.2f})",
+        f"{mood}",
+        "",
+        f"Tomorrow: {tomorrow}",
+        watch,
+        "",
+        _FOOTER,
+    ])
 
 
 def format_digest(
