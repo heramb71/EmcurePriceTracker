@@ -22,6 +22,9 @@ _STAMP_PCT = 0.00015
 _GST_PCT = 0.18
 # Zerodha brokerage on delivery.
 _BROKERAGE = 0.0
+# Depository participant charge per SELL debit — ₹13.5 + 18% GST (CDSL).
+# Flat per sell transaction regardless of quantity.
+DP_CHARGE_PER_SELL = 15.93
 
 
 def compute_charges(entry: float, exit_price: float, qty: int) -> float:
@@ -45,6 +48,15 @@ def compute_charges(entry: float, exit_price: float, qty: int) -> float:
 
     total = _BROKERAGE + stt + exchange_txn + sebi + stamp + gst
     return round(total, 2)
+
+
+def round_trip_charges(entry: float, exit_price: float, qty: int) -> float:
+    """Statutory charges PLUS the flat DP sell debit for a single-sell round
+    trip — the full cost of a simple buy→sell delivery cycle. This is what the
+    live P&L ledger books against each closed trade."""
+    if entry <= 0 or exit_price <= 0 or qty <= 0:
+        return 0.0
+    return round(compute_charges(entry, exit_price, qty) + DP_CHARGE_PER_SELL, 2)
 
 
 def net_pnl(entry: float, exit_price: float, qty: int, gross_pnl: float) -> tuple[float, float]:

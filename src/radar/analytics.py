@@ -98,6 +98,41 @@ def summary(
     return sorted(stats, key=lambda g: g.expectancy, reverse=True)
 
 
+def combo_stats(
+    conn: sqlite3.Connection, horizon: str = DEFAULT_HORIZON
+) -> dict[tuple[str, str], GroupStats]:
+    """Stats per (stock, signal_type) combo — the unit the radar validates."""
+    rows = _joined(conn, horizon)
+    buckets: dict[tuple[str, str], list[sqlite3.Row]] = {}
+    for r in rows:
+        buckets.setdefault((r["stock"], r["signal_type"]), []).append(r)
+    return {k: _stats_for(f"{k[0]}·{k[1]}", v) for k, v in buckets.items()}
+
+
+def muted_combos(
+    conn: sqlite3.Connection, min_n: int = 20, horizon: str = DEFAULT_HORIZON
+) -> set[tuple[str, str]]:
+    """(stock, signal_type) combos with PROVEN negative expectancy — at least
+    ``min_n`` decided outcomes and expectancy < 0. The radar keeps recording
+    them (the verdict can flip back) but stops pinging the phone: the whole
+    point of outcome tracking is to let the data silence the losers."""
+    return {
+        key for key, g in combo_stats(conn, horizon).items()
+        if (g.wins + g.losses) >= min_n and g.expectancy < 0
+    }
+
+
+def validated_combos(
+    conn: sqlite3.Connection, min_n: int = 20, horizon: str = DEFAULT_HORIZON
+) -> set[tuple[str, str]]:
+    """Combos with proven POSITIVE forward expectancy (≥ min_n decided) —
+    flagged in alerts as watchlist candidates."""
+    return {
+        key for key, g in combo_stats(conn, horizon).items()
+        if (g.wins + g.losses) >= min_n and g.expectancy > 0
+    }
+
+
 def _best(conn, group_by, horizon) -> Optional[GroupStats]:
     stats = [g for g in summary(conn, group_by, horizon) if g.n >= _MIN_SAMPLES]
     return stats[0] if stats else None

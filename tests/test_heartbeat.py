@@ -67,3 +67,24 @@ def test_market_hours_false_on_weekend():
 def test_market_hours_false_before_open():
     weekday_early = datetime(2026, 7, 3, 8, 0, tzinfo=_IST)  # Friday 08:00
     assert is_market_hours(weekday_early) is False
+
+
+# ── Multi-component watchdog ──────────────────────────────────────────────────
+
+def test_component_path_is_distinct_per_component():
+    from src.shared.heartbeat import component_path
+    p = component_path("emcure-bot")
+    assert p.endswith("heartbeat-emcure-bot.json")
+    assert component_path("emcure-bot") != component_path("emcure-radar")
+
+
+def test_evaluate_optional_component_skips_missing_heartbeat():
+    # The bot's beat only exists when its Telegram poller runs — a missing file
+    # must not alarm, but a stale one must.
+    assert evaluate(age=None, in_hours=True, threshold=THRESHOLD,
+                    component="EMCURE bot", unit="emcure-bot",
+                    require_present=False) is None
+    msg = evaluate(age=THRESHOLD + 60, in_hours=True, threshold=THRESHOLD,
+                   component="EMCURE bot", unit="emcure-bot",
+                   require_present=False)
+    assert msg is not None and "EMCURE bot" in msg and "emcure-bot" in msg

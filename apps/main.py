@@ -399,11 +399,13 @@ def _refresh(ticker: str, news_snapshot: dict | None = None, broker=None) -> dic
     # Supertrend path is skipped entirely and the managed-cycle owns execution.
     mc_cfg = ManagedConfig.from_env()
     if mc_cfg.enabled:
+        _mc_s7 = compute_sma7_gap(quote["price"], df_daily)
         mc_market = {
             "price":    quote["price"],
             "day_high": float(quote.get("high") or quote["price"]),
             "day_low":  float(quote.get("low")  or quote["price"]),
-            "gap":      compute_sma7_gap(quote["price"], df_daily)["gap"],
+            "gap":      _mc_s7["gap"],
+            "sma7":     _mc_s7["sma7"],
             "trend_7d": classify_7d_trend(df_daily),
         }
         # Execute the cycle ONLY during live market hours. _refresh() is also

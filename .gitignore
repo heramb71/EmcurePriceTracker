@@ -41,6 +41,7 @@ emcure.db
 emcure.db-wal
 emcure.db-shm
 heartbeat.json
+heartbeat-*.json
 # atomic-write sidecars (src/shared/atomic_json.py)
 *.json.lock
 *.json.*.tmp

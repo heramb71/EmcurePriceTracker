@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly EmcurePriceTracker state backup (17:00 IST, after market close)
+
+[Timer]
+# 17:00 IST = 11:30 UTC. Persistent=true fires a missed run on next boot.
+OnCalendar=*-*-* 11:30:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

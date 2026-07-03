@@ -110,9 +110,18 @@ def send_eod_summaries(tg_token: str, tg_chat: str, exclude: set[str]) -> int:
 
 
 # ── one scan + dispatch cycle ───────────────────────────────────────────────
+def _mute_enabled() -> bool:
+    return os.getenv("RADAR_MUTE_NEGATIVE", "true").lower() == "true"
+
+
+def _mute_min_n() -> int:
+    return int(os.getenv("RADAR_MUTE_MIN_N", "20"))
+
+
 def run_cycle(
     conn,
     alert_gate: AlertGate,
+    mute_gate: AlertGate,
     tg_token: str,
     tg_chat: str,
     last_digest: list[datetime],
@@ -120,15 +129,27 @@ def run_cycle(
 ) -> None:
     result = scan.run_scan()
     gated = result.above_gate()  # per-family gate (momentum vs reversion)
+
+    # Let the tracked outcomes act on the alert budget: combos with proven
+    # NEGATIVE expectancy go silent (but keep being recorded, via mute_gate,
+    # so the verdict can flip back); proven positives get tagged as validated.
+    muted = analytics.muted_combos(conn, min_n=_mute_min_n()) if _mute_enabled() else set()
+    validated = analytics.validated_combos(conn, min_n=_mute_min_n())
+    alertable = [t for t in gated if (t[0].stock, t[0].signal_type) not in muted]
+    silenced  = [t for t in gated if (t[0].stock, t[0].signal_type) in muted]
+
     logger.info(
-        "Scan: regime=%s breadth=%.2f hits=%d above_gate(mom=%d/rev=%d)=%d illiquid=%s",
+        "Scan: regime=%s breadth=%.2f hits=%d above_gate(mom=%d/rev=%d)=%d muted=%d illiquid=%s",
         result.regime, result.breadth, len(result.ranked),
         scoring.momentum_gate(), scoring.reversion_gate(), len(gated),
-        ",".join(result.illiquid) or "-",
+        len(silenced), ",".join(result.illiquid) or "-",
     )
 
     now = _now_ist().replace(tzinfo=None)
-    individual, overflow = alert_gate.select(gated, now)
+    individual, overflow = alert_gate.select(alertable, now)
+    # Muted combos flow through their own gate (same cooldown, no Telegram) so
+    # outcome tracking continues at the normal cadence without duplicate rows.
+    shadow, _ = mute_gate.select(silenced, now)
 
     tg_ready = bool(tg_token and tg_chat)
     for hit, conf, _rank in individual:
@@ -139,8 +160,21 @@ def run_cycle(
             suggested_stop=hit.stop, suggested_target=hit.target, rr=hit.rr,
         )
         if tg_ready:
-            msg = format_opportunity(hit, conf, result.regime, snap.price)
+            msg = format_opportunity(
+                hit, conf, result.regime, snap.price,
+                validated=(hit.stock, hit.signal_type) in validated,
+            )
             _retry_send(send_alert, tg_token, tg_chat, msg)
+
+    for hit, conf, _rank in shadow:
+        snap = result.snapshots[hit.stock]
+        store.insert_signal(
+            conn, stock=hit.stock, signal_type=hit.signal_type, confidence=conf,
+            regime=result.regime, price_at_alert=snap.price,
+            suggested_stop=hit.stop, suggested_target=hit.target, rr=hit.rr,
+        )
+        logger.info("Muted (negative expectancy): %s %s — recorded, not alerted",
+                    hit.stock, hit.signal_type)
 
     # Overflow → one digest, throttled to at most once per digest_minutes.
     if overflow and tg_ready:
@@ -165,6 +199,11 @@ def main() -> None:
         max_per_day=int(os.getenv("RADAR_MAX_ALERTS_PER_DAY", "12")),
         cooldown_minutes=int(os.getenv("RADAR_COOLDOWN_MINUTES", "90")),
     )
+    # Shadow gate for muted combos — same cadence, separate budget, no sends.
+    mute_gate = AlertGate(
+        max_per_day=int(os.getenv("RADAR_MAX_ALERTS_PER_DAY", "12")),
+        cooldown_minutes=int(os.getenv("RADAR_COOLDOWN_MINUTES", "90")),
+    )
     digest_minutes = int(os.getenv("RADAR_DIGEST_MINUTES", "60"))
     last_digest: list[datetime] = []
 
@@ -180,7 +219,8 @@ def main() -> None:
         try:
             if _is_market_open():
                 start = time.monotonic()
-                run_cycle(conn, alert_gate, tg_token, tg_chat, last_digest, digest_minutes)
+                run_cycle(conn, alert_gate, mute_gate, tg_token, tg_chat,
+                          last_digest, digest_minutes)
                 written = tracker.evaluate_due(conn)
                 if written:
                     logger.info("Outcomes recorded this cycle: %d", written)

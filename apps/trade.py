@@ -5,7 +5,8 @@ Manual trade CLI.
 Usage:
   python -m apps.trade buy 1693          # record entry at ₹1693 (qty auto from CAPITAL)
   python -m apps.trade buy 1693 60       # record entry at ₹1693, qty 60
-  python -m apps.trade sell              # close the trade
+  python -m apps.trade sell              # close the trade at the live price
+  python -m apps.trade sell 1710         # close at an explicit price
   python -m apps.trade status            # show live P&L
   python -m apps.trade holding           # read-only: show live Zerodha delivery
                                     # holding (qty + avg buy price) + levels
@@ -24,20 +25,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from src.emcure import ledger
+from src.emcure.commands import live_price as _live_price
 from src.emcure.trade_manager import clear_trade, current_pnl, get_trade, set_trade
+from src.shared.costs import round_trip_charges
 
 CAPITAL     = float(os.getenv("CAPITAL", "100000"))
 RISK_RUPEES = float(os.getenv("RISK_RUPEES", "4500"))
 TICKER      = os.getenv("TICKER", "EMCURE")
-
-
-def _live_price() -> float:
-    try:
-        import yfinance as yf
-        info = yf.Ticker(f"{TICKER}.NS").fast_info
-        return round(float(info.last_price), 2)
-    except Exception:
-        return 0.0
 
 
 def cmd_buy(args: list[str]) -> None:
@@ -69,23 +63,31 @@ def cmd_sell(args: list[str]) -> None:
         print("No active trade to close.")
         sys.exit(0)
 
-    price = _live_price()
-    pnl_data = current_pnl(price) if price > 0 else None
-    clear_trade()
+    # sell [price] — explicit price wins; refuse to close blind (a silent clear
+    # would drop the round-trip from the P&L ledger).
+    price = float(args[0]) if args else _live_price()
+    if price <= 0:
+        print("❌ Couldn't fetch a live price — trade NOT closed.")
+        print("   Try again, or close at a known price: python -m apps.trade sell <price>")
+        sys.exit(1)
 
-    if pnl_data and price > 0:
-        ledger.log_trade(
-            strategy="manual", ticker=TICKER, qty=pnl_data["qty"],
-            entry_price=pnl_data["entry"], exit_price=price,
-            pnl=pnl_data["pnl"], exit_reason="manual",
-            opened_at=trade.get("opened_at"),
-        )
+    pnl_data = current_pnl(price)
+    clear_trade()
+    charges = round_trip_charges(pnl_data["entry"], price, pnl_data["qty"])
+    net = round(pnl_data["pnl"] - charges, 2)
+    ledger.log_trade(
+        strategy="manual", ticker=TICKER, qty=pnl_data["qty"],
+        entry_price=pnl_data["entry"], exit_price=price,
+        pnl=pnl_data["pnl"], charges=charges, exit_reason="manual",
+        opened_at=trade.get("opened_at"),
+    )
 
     print(f"\n✅ Trade closed — {TICKER}.NS")
-    if pnl_data and price > 0:
-        print(f"   Entry  ₹{pnl_data['entry']:,.2f}")
-        print(f"   Exit   ₹{price:,.2f}  ({round(price - pnl_data['entry'], 2):+.2f}/sh)")
-        print(f"   P&L    ₹{pnl_data['pnl']:+,.0f}")
+    print(f"   Entry    ₹{pnl_data['entry']:,.2f}")
+    print(f"   Exit     ₹{price:,.2f}  ({round(price - pnl_data['entry'], 2):+.2f}/sh)")
+    print(f"   Gross    ₹{pnl_data['pnl']:+,.0f}")
+    print(f"   Charges  ₹{charges:,.0f}")
+    print(f"   Net P&L  ₹{net:+,.0f}")
     print()
 
 

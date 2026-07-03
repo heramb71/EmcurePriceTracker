@@ -407,6 +407,19 @@ def _dispatch_alerts(
             last_alerted[eod_key] = now_t
             logger.info("EOD summary sent")
 
+    # ── Weekly P&L digest (Friday, after the EOD summary) ────────────────────
+    # Net-of-charges numbers from the durable ledger, so edge decay is visible
+    # weekly instead of whenever someone remembers `python -m apps.trade report`.
+    if notify_ready and schedule.in_eod(now_t) and now_t.weekday() == 4:
+        wk_key = f"weekly_{now_t.date()}"
+        if wk_key not in last_alerted:
+            digest = ledger.format_weekly_digest(now_t.date().isoformat())
+            if digest:
+                _notify(digest)
+                logger.info("Weekly digest sent")
+            # Mark even when the week had no trades — nothing to retry for.
+            last_alerted[wk_key] = now_t
+
     # ── Intraday entry signal (BUY / STRONG_BUY) ─────────────────────────────
     # Suppressed under the managed-cycle — its re-entry uses different levels
     # (+₹15/20/30, qty from MANAGED_QTY) and emits its own BUY alert.

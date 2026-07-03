@@ -33,6 +33,20 @@ die()  { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 [[ $EUID -eq 0 ]] || die "Run as root: sudo bash $0"
 [[ -d "$APP_DIR/.git" ]] || die "$APP_DIR is not a git checkout — run the first-time setup script instead."
 
+# ── 0. market-hours deploy guard ──────────────────────────────────────────────
+# A deploy restarts the tracker mid-session — with a live position that means a
+# management gap and a startup reconcile at the worst possible time, and a bad
+# deploy could take the tracker down entirely. Refuse during NSE hours
+# (Mon–Fri 09:15–15:30 IST) unless FORCE=1. Exiting non-zero keeps the GitHub
+# Action visibly red so a deferred deploy is never mistaken for a shipped one.
+if [[ "${FORCE:-0}" != "1" ]]; then
+  IST_DOW=$(TZ=Asia/Kolkata date +%u)   # 1=Mon … 7=Sun
+  IST_HM=$(TZ=Asia/Kolkata date +%H%M)
+  if (( IST_DOW <= 5 )) && (( 10#$IST_HM >= 915 )) && (( 10#$IST_HM <= 1530 )); then
+    die "NSE market is open (IST $(TZ=Asia/Kolkata date +%H:%M)) — deploy DEFERRED, nothing changed. Re-run after 15:30 IST, or: FORCE=1 sudo bash $0"
+  fi
+fi
+
 # App module (bare name) → the unit file tracked in deploy/. Used to re-sync a
 # drifted unit regardless of what the installed service happens to be named.
 declare -A UNIT_SRC=(
@@ -77,6 +91,13 @@ info "Installing watchdog timer ..."
 install -m 644 "$APP_DIR/deploy/watchdog.service" /etc/systemd/system/emcure-watchdog.service
 install -m 644 "$APP_DIR/deploy/watchdog.timer"   /etc/systemd/system/emcure-watchdog.timer
 
+# ── 2c. nightly state backup (oneshot service + timer) ────────────────────────
+# Ledgers + runtime state → rotating archive in /var/backups/emcure, optional
+# off-box copy via /etc/default/emcure-backup (see deploy/backup.sh).
+info "Installing backup timer ..."
+install -m 644 "$APP_DIR/deploy/backup.service" /etc/systemd/system/emcure-backup.service
+install -m 644 "$APP_DIR/deploy/backup.timer"   /etc/systemd/system/emcure-backup.timer
+
 # ── 3. discover this project's services (name-agnostic, by WorkingDirectory) ──
 mapfile -t UNITS < <(grep -lFx "WorkingDirectory=$APP_DIR" /etc/systemd/system/*.service 2>/dev/null || true)
 [[ ${#UNITS[@]} -gt 0 ]] || die "No services found running from $APP_DIR — run the first-time setup script."
@@ -105,6 +126,7 @@ info "Services: ${SERVICES[*]}"
 info "Reloading systemd and restarting services ..."
 systemctl daemon-reload
 systemctl enable --now emcure-watchdog.timer >/dev/null 2>&1 || warn "watchdog timer not enabled"
+systemctl enable --now emcure-backup.timer   >/dev/null 2>&1 || warn "backup timer not enabled"
 systemctl restart "${SERVICES[@]}"
 sleep 3
 

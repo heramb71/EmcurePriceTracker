@@ -62,3 +62,24 @@ def test_report_reports_insufficient_data_early(conn):
     _outcome(conn, sid, 105, "WIN")
     report = analytics.format_report(conn)
     assert "Insufficient data" in report
+
+
+# ── Outcome-driven muting: negative combos silenced, positive ones validated ──
+
+def _combo(conn, stock, sig, exit_delta, n):
+    for _ in range(n):
+        sid = _signal(conn, stock, sig, "SIDEWAYS", 100)
+        _outcome(conn, sid, 100 + exit_delta, "WIN" if exit_delta > 0 else "LOSS")
+
+
+def test_muted_and_validated_combos(conn):
+    _combo(conn, "IRFC", "sma7_reversion", -5, n=4)     # proven loser
+    _combo(conn, "EMCURE", "sma7_reversion", +8, n=4)   # proven winner
+    _combo(conn, "SUZLON", "atr_breakout", -5, n=2)     # too few — undecided
+
+    muted = analytics.muted_combos(conn, min_n=3)
+    validated = analytics.validated_combos(conn, min_n=3)
+    assert ("IRFC", "sma7_reversion") in muted
+    assert ("EMCURE", "sma7_reversion") in validated
+    assert ("SUZLON", "atr_breakout") not in muted | validated
+    assert not muted & validated

@@ -165,6 +165,8 @@ MANAGED_TARGETS=15,20,30  # rupee targets from entry; sells at highest reachable
 MANAGED_SL=100            # stop = entry − ₹100
 MANAGED_QTY=8             # re-entry position size (shares)
 MANAGED_REENTRY_GAP=20    # re-enter when price ≥ ₹20 below the 7-day SMA
+MANAGED_REENTRY_GAP_PCT=0 # opt-in: >0 → trigger = SMA7 × pct/100 (scale-invariant,
+                          # replaces the ₹ gap; the radar's SMA7 threshold is 1.4%)
 MANAGED_REACH_MIN_PROB=50 # aim for the highest target with reach-prob ≥ this %
                           # (dynamic, from live price + 7/14/30-day moves)
 # Live-safety guards (Phase 2):
@@ -218,9 +220,29 @@ python -m apps.watchdog
   `apps/watchdog.py` (a `oneshot` on the `emcure-watchdog.timer`, every 5 min, self-gated to
   market hours) alarms on the emcure Telegram bot if the heartbeat goes stale. `update.sh`
   installs/enables the timer automatically.
-- **Durable P&L ledger** — `src/emcure/ledger.py` (SQLite `emcure.db`, WAL, gitignored) records
-  one row per closed round-trip. Managed exits log via `_record_exit`; manual sells via
-  `apps/trade.py` + `bot_server`. `python -m apps.trade report` prints the analytics.
+- **Durable P&L ledger — NET of charges** — `src/emcure/ledger.py` (SQLite `emcure.db`, WAL,
+  gitignored) records one row per closed round-trip with `charges` (STT/txn/stamp/GST + DP via
+  `src/shared/costs.round_trip_charges`) and `net_pnl`; all analytics, the EOD "Day P&L", the
+  Friday weekly digest, and the managed-cycle daily-loss kill-switch run on NET money. Managed
+  exits log via `_record_exit`; manual sells via `apps/trade.py` + the bot commands.
+  `python -m apps.trade report` prints the analytics.
+- **Resting-stop ratchet** — in live mode the managed cycle's resting exchange SL order is
+  lifted to the touched-target floor (`_ensure_protective_stop` cancel/re-places on a higher
+  `stop_trigger`), so "never give a touched rung back" is enforced by the exchange even if the
+  bot is offline between 5-min cycles. The trigger only ever moves up.
+- **Command layer** — bot commands live in `src/emcure/commands.py` (unit-tested, no Flask
+  import); `bot_server.py` is transport only. `live_price()` prefers the Kite LTP (the price
+  the engine trades on) over the ~15-min-delayed yfinance quote for STATUS/SELL/dashboard.
+- **Multi-component watchdog** — the tracker beats the default `heartbeat.json`; the bot's
+  Telegram poller beats `heartbeat-emcure-bot.json` (`heartbeat.component_path`). The watchdog
+  alarms on a stale tracker (or missing) and a stale bot beat — the EXIT/SELL command channel
+  is a risk control, so its death must page.
+- **Nightly backups** — `deploy/backup.sh` (emcure-backup.timer, 17:00 IST, installed by
+  `update.sh`) snapshots `emcure.db`/`radar.db` (WAL-safe) + state JSONs to
+  `/var/backups/emcure` (rotate 14); optional off-box copy via `BACKUP_OCI_BUCKET` or
+  `BACKUP_RCLONE_REMOTE` in `/etc/default/emcure-backup`.
+- **Market-hours deploy guard** — `update.sh` refuses to run Mon–Fri 09:15–15:30 IST (exits
+  non-zero so the GitHub Action goes visibly red); override with `FORCE=1` for emergencies.
 - **Web dashboard** — `GET /dashboard` on `bot_server` (gated by `HEALTH_API_KEY` in prod, open
   in local dev) renders heartbeat status, open position + live P&L, and ledger stats. Pure
   renderer in `src/emcure/dashboard_web.py`.
@@ -306,7 +328,11 @@ signal's forward outcome to measure edge. **It never places trades.**
 - `alert_format.py` — the 🚨 TRADE OPPORTUNITY message + digest + `format_eod_stock` (per-stock EOD summary)
 - `store.py` — SQLite (`radar.db`, gitignored): `signals` + `outcomes` tables
 - `tracker.py` — evaluate matured outcomes at 1h/4h/1d/3d/5d/10d → MFE/MAE, WIN/LOSS/NEUTRAL
-- `analytics.py` — win-rate / profit factor / expectancy by stock·signal·regime; leaders by expectancy
+- `analytics.py` — win-rate / profit factor / expectancy by stock·signal·regime; leaders by
+  expectancy; `muted_combos`/`validated_combos` let the outcomes act on alerting: a
+  (stock, signal) combo with ≥ `RADAR_MUTE_MIN_N` (20) decided outcomes and negative
+  expectancy goes silent (still recorded via a shadow gate, so the verdict can flip back);
+  proven-positive combos get a "📈 Validated" tag in their alerts. `RADAR_MUTE_NEGATIVE=true`.
 
 **Persistence:** one SQLite file (`radar.db`), stdlib `sqlite3`, WAL mode — no
 server, OCI-free-tier friendly. The radar is the sole writer.

@@ -52,16 +52,26 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             qty         INTEGER NOT NULL,
             entry_price REAL    NOT NULL,
             exit_price  REAL    NOT NULL,
-            pnl         REAL    NOT NULL,   -- realized ₹ (exit-entry)*qty
+            pnl         REAL    NOT NULL,   -- gross realized ₹ (exit-entry)*qty
             exit_reason TEXT    NOT NULL DEFAULT '',  -- target | stop | manual | external
             dry_run     INTEGER NOT NULL DEFAULT 0,
             opened_at   TEXT,
-            closed_at   TEXT    NOT NULL
+            closed_at   TEXT    NOT NULL,
+            charges     REAL    NOT NULL DEFAULT 0,   -- STT/txn/stamp/GST + DP
+            net_pnl     REAL                          -- pnl − charges (the honest number)
         );
         CREATE INDEX IF NOT EXISTS idx_trades_closed ON trades(closed_at);
         CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy);
         """
     )
+    # Migrate pre-charges databases in place (ALTER is a no-op on new DBs since
+    # CREATE above already has the columns). Old rows keep net_pnl NULL, so the
+    # analytics fall back to gross for them via COALESCE.
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(trades)")}
+    if "charges" not in cols:
+        conn.execute("ALTER TABLE trades ADD COLUMN charges REAL NOT NULL DEFAULT 0")
+    if "net_pnl" not in cols:
+        conn.execute("ALTER TABLE trades ADD COLUMN net_pnl REAL")
     conn.commit()
 
 
@@ -78,18 +88,21 @@ def record_trade(
     dry_run: bool = False,
     opened_at: Optional[str] = None,
     closed_at: Optional[datetime] = None,
+    charges: float = 0.0,
 ) -> int:
-    """Persist one closed trade; returns its row id."""
+    """Persist one closed trade; returns its row id. ``pnl`` is gross;
+    ``net_pnl`` is derived as ``pnl − charges`` and is what the analytics use."""
     when = (closed_at or datetime.now()).isoformat(timespec="seconds")
     cur = conn.execute(
         """
         INSERT INTO trades
             (strategy, ticker, qty, entry_price, exit_price, pnl,
-             exit_reason, dry_run, opened_at, closed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             exit_reason, dry_run, opened_at, closed_at, charges, net_pnl)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (strategy, ticker, int(qty), float(entry_price), float(exit_price),
-         float(pnl), exit_reason, 1 if dry_run else 0, opened_at, when),
+         float(pnl), exit_reason, 1 if dry_run else 0, opened_at, when,
+         float(charges), round(float(pnl) - float(charges), 2)),
     )
     conn.commit()
     return int(cur.lastrowid)
@@ -127,7 +140,10 @@ def summary(conn: sqlite3.Connection, *, strategy: Optional[str] = None,
     if not include_dry_run:
         where.append("dry_run = 0")
     clause = f"WHERE {' AND '.join(where)}" if where else ""
-    rows = conn.execute(f"SELECT pnl FROM trades {clause}", params).fetchall()
+    # Net of charges where recorded; pre-migration rows fall back to gross.
+    rows = conn.execute(
+        f"SELECT COALESCE(net_pnl, pnl) AS pnl FROM trades {clause}", params
+    ).fetchall()
     pnls = [r["pnl"] for r in rows]
     return _stats(pnls)
 
@@ -160,7 +176,7 @@ def _stats(pnls: list[float]) -> dict[str, Any]:
 
 
 def day_stats(day: str) -> dict[str, Any]:
-    """Realized P&L (₹) and closed-trade count for one date (``YYYY-MM-DD``),
+    """Net realized P&L (₹) and closed-trade count for one date (``YYYY-MM-DD``),
     live trades only — dry-run rows are paper, not money. Feeds the EOD
     summary's "Day P&L / trades today" line. Never raises: on any failure it
     reports zeros, mirroring ``log_trade``'s must-not-break contract."""
@@ -168,7 +184,8 @@ def day_stats(day: str) -> dict[str, Any]:
         conn = connect()
         try:
             row = conn.execute(
-                "SELECT COALESCE(SUM(pnl), 0) AS pnl, COUNT(*) AS trades "
+                "SELECT COALESCE(SUM(COALESCE(net_pnl, pnl)), 0) AS pnl, "
+                "COUNT(*) AS trades "
                 "FROM trades WHERE dry_run = 0 AND date(closed_at) = ?",
                 (day,),
             ).fetchone()
@@ -178,6 +195,59 @@ def day_stats(day: str) -> dict[str, Any]:
     except Exception:
         logger.exception("ledger.day_stats failed for %s", day)
         return {"pnl": 0.0, "trades": 0}
+
+
+def week_stats(end_day: str, days: int = 7) -> dict[str, Any]:
+    """Live and dry-run stat blocks over the ``days`` ending on ``end_day``
+    (inclusive), net of charges. Never raises — zeros on failure."""
+    empty = {"live": _stats([]), "dry": _stats([]), "end": end_day, "days": days}
+    try:
+        conn = connect()
+        try:
+            rows = conn.execute(
+                "SELECT COALESCE(net_pnl, pnl) AS pnl, dry_run FROM trades "
+                "WHERE date(closed_at) > date(?, ?) AND date(closed_at) <= date(?)",
+                (end_day, f"-{int(days)} days", end_day),
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        logger.exception("ledger.week_stats failed for %s", end_day)
+        return empty
+    return {
+        "live": _stats([r["pnl"] for r in rows if not r["dry_run"]]),
+        "dry":  _stats([r["pnl"] for r in rows if r["dry_run"]]),
+        "end": end_day, "days": days,
+    }
+
+
+def format_weekly_digest(end_day: str) -> Optional[str]:
+    """Friday-close digest: the week's net numbers plus the running live
+    totals, so edge decay shows up weekly instead of whenever someone
+    remembers to run ``trade report``. Returns None when the week had no
+    closed trades (nothing worth a message)."""
+    wk = week_stats(end_day)
+    live, dry = wk["live"], wk["dry"]
+    if live["trades"] == 0 and dry["trades"] == 0:
+        return None
+    lines = [f"📈 *Weekly P&L — week ending {end_day}*", ""]
+    if live["trades"]:
+        lines += _format_block("This week (live, net of charges)", live)
+    if dry["trades"]:
+        if live["trades"]:
+            lines.append("")
+        lines += _format_block("This week (dry-run / paper)", dry)
+    try:
+        conn = connect()
+        try:
+            overall = summary(conn, include_dry_run=False)
+        finally:
+            conn.close()
+        if overall["trades"]:
+            lines += ["", ""] + _format_block("Since inception (live)", overall)
+    except Exception:
+        logger.exception("weekly digest: inception totals unavailable")
+    return "\n".join(lines)
 
 
 def recent_trades(conn: sqlite3.Connection, limit: int = 10) -> list[dict[str, Any]]:

@@ -45,50 +45,78 @@ def is_market_hours(now: datetime | None = None) -> bool:
     return schedule.is_market_open(now or _now_ist())
 
 
-def evaluate(age: float | None, in_hours: bool, threshold: float) -> str | None:
-    """Return an alarm message if the tracker looks dead, else None.
+def evaluate(age: float | None, in_hours: bool, threshold: float, *,
+             component: str = "EMCURE tracker", unit: str = "emcure-tracker",
+             require_present: bool = True) -> str | None:
+    """Return an alarm message if the component looks dead, else None.
 
     Pure decision core so it can be unit-tested without touching the clock,
-    the filesystem, or the network.
+    the filesystem, or the network. ``require_present=False`` skips the
+    missing-heartbeat alarm — used for optional components (the bot's beat
+    only exists when its Telegram poller is configured), which alarm on
+    staleness only.
     """
     if not in_hours:
         return None
     if age is None:
+        if not require_present:
+            return None
         return (
-            "🚨 EMCURE tracker DOWN\n\n"
-            "No heartbeat found during market hours — the tracker may not be "
-            "running. Check: systemctl status emcure-tracker"
+            f"🚨 {component} DOWN\n\n"
+            "No heartbeat found during market hours — the service may not be "
+            f"running. Check: systemctl status {unit}"
         )
     if age > threshold:
         mins = int(age // 60)
         return (
-            "🚨 EMCURE tracker STALLED\n\n"
+            f"🚨 {component} STALLED\n\n"
             f"Last heartbeat was {mins} min ago (limit {int(threshold // 60)} min). "
             "The loop is wedged or the service died. Check: "
-            "journalctl -u emcure-tracker -n 50"
+            f"journalctl -u {unit} -n 50"
         )
     return None
+
+
+# (display name, systemd unit, heartbeat file, required). The tracker owns the
+# default heartbeat file; the bot (the EXIT/SELL command channel) beats to its
+# own file from the Telegram poller — optional because a WhatsApp-only setup
+# never writes it.
+def _components() -> tuple[tuple[str, str, str | None, bool], ...]:
+    from src.shared.heartbeat import component_path
+    return (
+        ("EMCURE tracker", "emcure-tracker", None, True),
+        ("EMCURE bot (command channel)", "emcure-bot", component_path("emcure-bot"), False),
+    )
 
 
 def main() -> int:
     load_dotenv()
     threshold = float(os.getenv("WATCHDOG_STALE_SECONDS", _DEFAULT_STALE_SECONDS))
     in_hours = is_market_hours()
-    age = age_seconds()
 
-    alarm = evaluate(age, in_hours, threshold)
-    if alarm is None:
-        logger.info(
-            "OK — market_hours=%s heartbeat_age=%s pid=%s",
-            in_hours, None if age is None else f"{age:.0f}s", last_beat().get("pid"),
-        )
+    alarms: list[str] = []
+    for component, unit, path, required in _components():
+        age = age_seconds(path)
+        alarm = evaluate(age, in_hours, threshold,
+                         component=component, unit=unit, require_present=required)
+        if alarm is None:
+            logger.info(
+                "OK — %s market_hours=%s heartbeat_age=%s pid=%s",
+                unit, in_hours, None if age is None else f"{age:.0f}s",
+                last_beat(path).get("pid"),
+            )
+        else:
+            alarms.append(alarm)
+            logger.error("ALARM: %s", alarm.splitlines()[0])
+
+    if not alarms:
         return 0
 
-    logger.error("ALARM: %s", alarm.splitlines()[0])
     token, chat_id = channels.telegram_config("emcure")
     if token and chat_id:
-        if not send_alert(token, chat_id, alarm):
-            logger.error("watchdog alarm failed to send")
+        for alarm in alarms:
+            if not send_alert(token, chat_id, alarm):
+                logger.error("watchdog alarm failed to send")
     else:
         logger.error("watchdog alarm not sent — no emcure Telegram config")
     return 1

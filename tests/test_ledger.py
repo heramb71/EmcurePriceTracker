@@ -103,3 +103,77 @@ def test_day_stats_sums_live_trades_for_the_date(monkeypatch, tmp_path):
 def test_day_stats_never_raises(monkeypatch):
     monkeypatch.setenv("EMCURE_DB_PATH", "/nonexistent-dir/emcure.db")
     assert ledger.day_stats("2026-07-03") == {"pnl": 0.0, "trades": 0}
+
+
+def test_net_pnl_recorded_and_used_by_summary(tmp_path):
+    conn = _conn(tmp_path)
+    # Gross +160 with ₹47 charges → net 113 is what the analytics must see.
+    ledger.record_trade(conn, strategy="managed", ticker="EMCURE", qty=8,
+                        entry_price=1600, exit_price=1620, pnl=160, charges=47)
+    s = ledger.summary(conn)
+    assert s["total_pnl"] == 113.0
+    row = ledger.recent_trades(conn, limit=1)[0]
+    assert row["charges"] == 47 and row["net_pnl"] == 113.0
+
+
+def test_pre_charges_db_migrates_and_falls_back_to_gross(tmp_path):
+    import sqlite3
+    path = str(tmp_path / "old.db")
+    old = sqlite3.connect(path)
+    old.execute(
+        """CREATE TABLE trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy TEXT NOT NULL, ticker TEXT NOT NULL, qty INTEGER NOT NULL,
+            entry_price REAL NOT NULL, exit_price REAL NOT NULL, pnl REAL NOT NULL,
+            exit_reason TEXT NOT NULL DEFAULT '', dry_run INTEGER NOT NULL DEFAULT 0,
+            opened_at TEXT, closed_at TEXT NOT NULL)"""
+    )
+    old.execute(
+        "INSERT INTO trades (strategy, ticker, qty, entry_price, exit_price, pnl, closed_at) "
+        "VALUES ('managed', 'EMCURE', 8, 1600, 1620, 160, '2026-07-01T15:00:00')"
+    )
+    old.commit()
+    old.close()
+
+    conn = ledger.connect(path)          # migration runs here
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(trades)")}
+    assert {"charges", "net_pnl"} <= cols
+    # Old row has net_pnl NULL → summary falls back to gross.
+    assert ledger.summary(conn)["total_pnl"] == 160.0
+
+
+def test_week_stats_splits_live_and_dry_within_window(monkeypatch, tmp_path):
+    from datetime import datetime
+    monkeypatch.setenv("EMCURE_DB_PATH", str(tmp_path / "emcure.db"))
+    conn = ledger.connect()
+    ledger.record_trade(conn, strategy="managed", ticker="EMCURE", qty=8,
+                        entry_price=1600, exit_price=1620, pnl=160, charges=40,
+                        closed_at=datetime(2026, 7, 1, 15, 0))
+    ledger.record_trade(conn, strategy="managed", ticker="EMCURE", qty=8,
+                        entry_price=1600, exit_price=1700, pnl=800, dry_run=True,
+                        closed_at=datetime(2026, 7, 2, 15, 0))
+    # Outside the 7-day window ending 2026-07-03 — must not leak in.
+    ledger.record_trade(conn, strategy="managed", ticker="EMCURE", qty=8,
+                        entry_price=1600, exit_price=1650, pnl=400,
+                        closed_at=datetime(2026, 6, 20, 15, 0))
+    conn.close()
+
+    wk = ledger.week_stats("2026-07-03")
+    assert wk["live"]["trades"] == 1 and wk["live"]["total_pnl"] == 120.0  # net
+    assert wk["dry"]["trades"] == 1 and wk["dry"]["total_pnl"] == 800.0
+
+
+def test_weekly_digest_none_when_empty_and_formats_when_not(monkeypatch, tmp_path):
+    from datetime import datetime
+    monkeypatch.setenv("EMCURE_DB_PATH", str(tmp_path / "emcure.db"))
+    assert ledger.format_weekly_digest("2026-07-03") is None
+
+    conn = ledger.connect()
+    ledger.record_trade(conn, strategy="managed", ticker="EMCURE", qty=8,
+                        entry_price=1600, exit_price=1620, pnl=160, charges=40,
+                        closed_at=datetime(2026, 7, 1, 15, 0))
+    conn.close()
+    msg = ledger.format_weekly_digest("2026-07-03")
+    assert msg is not None
+    assert "Weekly P&L" in msg and "net of charges" in msg
+    assert "Since inception" in msg

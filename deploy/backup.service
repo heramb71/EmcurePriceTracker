@@ -1,0 +1,7 @@
+[Unit]
+Description=EmcurePriceTracker nightly state backup (ledgers + runtime state)
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/emcure-backup
+ExecStart=/usr/bin/bash /opt/emcure/deploy/backup.sh

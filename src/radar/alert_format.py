@@ -57,11 +57,19 @@ def _regime_plain(regime: str) -> str:
 
 
 def format_opportunity(
-    signal: SignalHit, confidence: int, regime: str, price: float
+    signal: SignalHit, confidence: int, regime: str, price: float,
+    validated: bool = False,
 ) -> str:
-    """The single-signal 🚨 trade-idea message (for manual review only)."""
+    """The single-signal 🚨 trade-idea message (for manual review only).
+
+    ``validated`` marks a (stock, signal) combo whose tracked forward outcomes
+    show positive expectancy — the radar's own data vouching for the setup."""
     lo, hi = signal.entry_zone
     conditions = "\n".join(f"• {c}" for c in signal.conditions)
+    validated_line = (
+        "📈 Validated: this stock+signal combo has positive tracked expectancy\n\n"
+        if validated else ""
+    )
     return (
         f"🚨 Trade idea — {signal.stock}\n\n"
         f"{signal_label(signal.signal_type)}  ·  now ₹{price:.2f}\n"
@@ -69,6 +77,7 @@ def format_opportunity(
         f"Target ₹{signal.target:.2f}  ·  safety exit ₹{signal.stop:.2f}  "
         f"(risk/reward {signal.rr:.1f})\n"
         f"Confidence {confidence}/100  ·  market {_regime_plain(regime)}\n\n"
+        f"{validated_line}"
         f"Why:\n{conditions}\n\n"
         f"{_FOOTER}"
     )

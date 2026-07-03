@@ -32,6 +32,7 @@ from typing import Callable, Optional
 
 from src.emcure import ledger
 from src.shared.atomic_json import locked, read_json, write_json
+from src.shared.costs import round_trip_charges
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ class ManagedConfig:
     max_daily_loss: float         # block new entries once realized day loss ≥ this (₹)
     reentry_cooldown_min: float   # min minutes between an exit and the next entry
     block_reentry_after_stop: bool  # no re-entry the same day as a stop-out
+    reentry_gap_pct: float = 0.0  # >0 → gap trigger = sma7 × pct/100 (overrides the ₹ gap)
 
     @classmethod
     def from_env(cls) -> "ManagedConfig":
@@ -79,6 +81,10 @@ class ManagedConfig:
             max_daily_loss   = float(os.getenv("MANAGED_MAX_DAILY_LOSS", str(sl_rupees * qty))),
             reentry_cooldown_min     = float(os.getenv("MANAGED_REENTRY_COOLDOWN_MIN", "60")),
             block_reentry_after_stop = os.getenv("MANAGED_BLOCK_REENTRY_AFTER_STOP", "true").lower() == "true",
+            # A fixed ₹ gap means 1.5% sensitivity at ₹1300 but 1.1% at ₹1800.
+            # Opt-in percentage mode keeps the trigger scale-invariant (the
+            # radar's validated SMA7 threshold is 1.4% for the same reason).
+            reentry_gap_pct          = float(os.getenv("MANAGED_REENTRY_GAP_PCT", "0") or 0),
         )
 
 
@@ -184,8 +190,12 @@ def decide(position: Optional[dict], market: dict, cfg: ManagedConfig) -> Decisi
 
     # Flat → SMA7 mean-reversion re-entry.
     gap   = float(market.get("gap", 0) or 0)          # price − sma7 (negative = below)
+    sma7  = float(market.get("sma7", 0) or 0)
     trend = market.get("trend_7d", "")
-    if gap <= -cfg.reentry_gap and trend != "Downward":
+    threshold = cfg.reentry_gap
+    if cfg.reentry_gap_pct > 0 and sma7 > 0:
+        threshold = round(sma7 * cfg.reentry_gap_pct / 100, 2)
+    if gap <= -threshold and trend != "Downward":
         return Decision(
             "reenter", reason=f"Price is ₹{abs(gap):.0f} below its recent average — buying the dip",
             price=price, qty=cfg.qty,
@@ -282,18 +292,27 @@ def _maybe_roll_day(now: datetime) -> None:
 
 
 def _record_exit(pnl: float, is_stop: bool, now: datetime, *,
-                 ticker: str = "", exit_price: float = 0.0, live: bool = False) -> None:
+                 ticker: str = "", exit_price: float = 0.0, live: bool = False,
+                 ) -> tuple[float, float]:
     """Atomically close the position and book the exit into the day's tally so the
     kill-switch and cooldown can see it. Also appends the closed round-trip to the
-    durable P&L ledger (best-effort — never blocks the exit)."""
+    durable P&L ledger (best-effort — never blocks the exit).
+
+    ``pnl`` is gross; the round-trip charges (STT/txn/stamp/GST + DP) are
+    computed here so the day tally, the kill-switch, and the ledger all run on
+    NET money. Returns ``(net_pnl, charges)`` for the caller's alert."""
     with locked(_STATE_FILE):
         state = _load()
         position = state.get("position") or {}
+        entry = float(position.get("entry", 0.0))
+        qty   = int(position.get("qty", 0))
+        charges = round_trip_charges(entry, float(exit_price), qty)
+        net = round(pnl - charges, 2)
         if state.get("day") != now.date().isoformat():
             state["day"] = now.date().isoformat()
             state["realized_pnl_today"] = 0.0
             state["stopped_out_today"] = False
-        state["realized_pnl_today"] = round(state.get("realized_pnl_today", 0.0) + pnl, 2)
+        state["realized_pnl_today"] = round(state.get("realized_pnl_today", 0.0) + net, 2)
         state["last_exit_at"] = now.isoformat()
         if is_stop:
             state["stopped_out_today"] = True
@@ -304,15 +323,17 @@ def _record_exit(pnl: float, is_stop: bool, now: datetime, *,
         ledger.log_trade(
             strategy="managed",
             ticker=ticker or os.getenv("TICKER", "EMCURE"),
-            qty=int(position.get("qty", 0)),
-            entry_price=float(position.get("entry", 0.0)),
+            qty=qty,
+            entry_price=entry,
             exit_price=float(exit_price),
             pnl=float(pnl),
+            charges=charges,
             exit_reason="stop" if is_stop else "target",
             dry_run=not live,
             opened_at=position.get("opened_at"),
             closed_at=now,
         )
+    return net, charges
 
 
 def reentry_blocked(cfg: ManagedConfig, now: datetime) -> Optional[str]:
@@ -436,7 +457,7 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
                 }))
                 logger.warning("Managed-cycle adopted holding: %d @ ₹%.2f", held, avg)
                 if cfg.live:
-                    _ensure_protective_stop(ticker, broker)   # resting exchange stop
+                    _ensure_protective_stop(ticker, broker, cfg)   # resting exchange stop
 
     # Decision price: prefer the broker's real-time last-traded price over the
     # yfinance quote (NSE lags up to ~15 min there), so stop / target / re-entry
@@ -493,7 +514,8 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
 
     if decision.action == "hold":
         if cfg.live and broker is not None:
-            _ensure_protective_stop(ticker, broker)   # keep the stop resting while we hold
+            # Keep the stop resting while we hold — ratcheted to any touched floor.
+            _ensure_protective_stop(ticker, broker, cfg)
         return events
     if decision.action == "wait":
         return events
@@ -543,12 +565,13 @@ def _settle_closed_position(ticker: str, position: dict, broker, cfg: ManagedCon
             entry = float(position["entry"])
             qty   = int(res["filled_qty"])
             pnl   = int(round((res["fill_price"] - entry) * qty))
-            _record_exit(pnl, is_stop=True, now=now, ticker=ticker,
-                         exit_price=res["fill_price"], live=cfg.live)
+            net, charges = _record_exit(pnl, is_stop=True, now=now, ticker=ticker,
+                                        exit_price=res["fill_price"], live=cfg.live)
             logger.warning("Managed-cycle STOP filled %d @ ₹%.2f  pnl=₹%d", qty, res["fill_price"], pnl)
             return [("managed_sell", {
                 "ticker": ticker, "exit_price": res["fill_price"], "qty": qty,
-                "entry": entry, "pnl": pnl, "label": "", "kind": "exit_sl",
+                "entry": entry, "pnl": pnl, "net": net, "charges": charges,
+                "label": "", "kind": "exit_sl",
                 "reason": "Resting stop-loss filled at the exchange",
             })]
     clear_position()
@@ -556,20 +579,50 @@ def _settle_closed_position(ticker: str, position: dict, broker, cfg: ManagedCon
     return [("managed_closed_externally", {"ticker": ticker, "qty": position.get("qty")})]
 
 
-def _ensure_protective_stop(ticker: str, broker) -> Optional[str]:
-    """Guarantee a resting exchange stop exists for the open position: place one
-    if missing, or re-place if the recorded order was cancelled/rejected. So the
-    exchange enforces the stop even if the bot is offline between cycles."""
+def _touched_floor(position: dict, cfg: ManagedConfig) -> Optional[float]:
+    """Highest target rung the position has printed (via high_since_entry),
+    or None when no rung has been touched yet."""
+    entry = float(position["entry"])
+    high = float(position.get("high_since_entry") or entry)
+    touched = [t for t in (round(entry + d, 2) for d in cfg.targets) if high >= t]
+    return max(touched) if touched else None
+
+
+def _ensure_protective_stop(ticker: str, broker, cfg: Optional[ManagedConfig] = None) -> Optional[str]:
+    """Guarantee a resting exchange stop exists for the open position — and
+    RATCHET it up to the touched-target floor.
+
+    Place a stop if missing, re-place if the recorded order was cancelled or
+    rejected, and cancel/re-place at a higher trigger once a target rung has
+    been touched. Without the ratchet the "never give a touched rung back"
+    floor was enforced only by the 5-min polling loop: a flash drop between
+    cycles (or with the bot offline) fell through to the original entry−SL
+    stop, giving back the whole floor. The trigger only ever moves UP."""
     position = get_position()
     if not position or broker is None:
         return None
+
+    desired = float(position["sl"])
+    if cfg is not None:
+        floor = _touched_floor(position, cfg)
+        if floor is not None and floor > desired:
+            desired = floor
+
     stop_id = position.get("stop_order_id")
+    current = float(position.get("stop_trigger") or position["sl"])
     if stop_id:
         status = broker.order_state(stop_id)
-        if status not in ("CANCELLED", "REJECTED"):
-            return stop_id            # resting / complete / unknown — leave it
-    new_id = broker.place_stop_loss(ticker, int(position["qty"]), float(position["sl"]))
-    _update_position(stop_order_id=new_id)
+        if status in ("CANCELLED", "REJECTED"):
+            stop_id = None            # dead order — re-place below
+        elif desired > current:       # ratchet: lift the resting trigger
+            broker.cancel(stop_id)
+            stop_id = None
+            logger.warning("Ratcheting resting stop ₹%.2f → ₹%.2f", current, desired)
+        else:
+            return stop_id            # resting at the right level — leave it
+
+    new_id = broker.place_stop_loss(ticker, int(position["qty"]), desired)
+    _update_position(stop_order_id=new_id, stop_trigger=desired)
     return new_id
 
 
@@ -590,15 +643,16 @@ def _execute_sell(ticker: str, decision: Decision, broker, now: datetime,
     exit_price = fill["fill_price"] if fill else decision.price
     entry      = float(pos.get("entry", exit_price))
     pnl        = int(round((exit_price - entry) * decision.qty))
-    # Books the P&L into the day's tally + sets the cooldown/stop-out flags so the
-    # kill-switch can halt re-entries — and closes the position atomically.
-    _record_exit(pnl, is_stop=(decision.action == "exit_sl"), now=now, ticker=ticker,
-                 exit_price=exit_price, live=cfg.live)
-    logger.warning("Managed-cycle SOLD %d @ ₹%.2f  pnl=₹%d", decision.qty, exit_price, pnl)
+    # Books the NET P&L into the day's tally + sets the cooldown/stop-out flags so
+    # the kill-switch can halt re-entries — and closes the position atomically.
+    net, charges = _record_exit(pnl, is_stop=(decision.action == "exit_sl"), now=now,
+                                ticker=ticker, exit_price=exit_price, live=cfg.live)
+    logger.warning("Managed-cycle SOLD %d @ ₹%.2f  gross=₹%d net=₹%.0f",
+                   decision.qty, exit_price, pnl, net)
     events.append(("managed_sell", {
         "ticker": ticker, "exit_price": exit_price, "qty": decision.qty,
-        "entry": entry, "pnl": pnl, "label": decision.label,
-        "kind": decision.action, "reason": decision.reason,
+        "entry": entry, "pnl": pnl, "net": net, "charges": charges,
+        "label": decision.label, "kind": decision.action, "reason": decision.reason,
     }))
     return events
 
@@ -622,7 +676,8 @@ def _execute_buy(ticker: str, decision: Decision, broker, cfg: ManagedConfig) ->
     qty   = fill["filled_qty"] if fill else decision.qty
     pos   = set_position(entry, qty, cfg)
     if broker is not None:
-        _update_position(stop_order_id=broker.place_stop_loss(ticker, qty, pos["sl"]))
+        _update_position(stop_order_id=broker.place_stop_loss(ticker, qty, pos["sl"]),
+                         stop_trigger=pos["sl"])
     logger.warning("Managed-cycle BOUGHT %d @ ₹%.2f", qty, entry)
     return [("managed_buy", {
         "ticker": ticker, "entry": entry, "qty": qty, "sl": pos["sl"],
@@ -662,8 +717,12 @@ def format_levels_block(cfg: ManagedConfig, position: Optional[dict],
             f"Will exit to protect if it drops to ₹{sl:,.2f}",
         ])
 
-    # Flat — waiting to buy the dip.
-    reentry = round(float(sma7) - cfg.reentry_gap, 2)
+    # Flat — waiting to buy the dip. Mirror decide()'s threshold exactly so the
+    # briefing's trigger price matches what the cycle will actually act on.
+    gap_rupees = cfg.reentry_gap
+    if cfg.reentry_gap_pct > 0 and float(sma7) > 0:
+        gap_rupees = round(float(sma7) * cfg.reentry_gap_pct / 100, 2)
+    reentry = round(float(sma7) - gap_rupees, 2)
     top     = round(reentry + max(cfg.targets), 2)
     return "\n".join([
         f"📊 *No shares right now — watching to buy*{test}",
@@ -701,13 +760,17 @@ def format_managed_event(ticker: str, event_type: str, p: dict) -> Optional[str]
             f"_Test only — no real order placed._"
         )
     if event_type == "managed_sell":
-        won  = p["pnl"] >= 0
+        # Net of charges when the exit recorded them — the number that actually
+        # lands in the account, not the flattering gross.
+        pnl_net = p.get("net", p["pnl"])
+        won  = pnl_net >= 0
         head = "🛑 *Sold" if p["kind"] == "exit_sl" else ("✅ *Sold" if won else "🔴 *Sold")
-        money = f"Profit ₹{p['pnl']:,.0f}" if won else f"Loss ₹{abs(p['pnl']):,.0f}"
+        money = f"Profit ₹{pnl_net:,.0f}" if won else f"Loss ₹{abs(pnl_net):,.0f}"
+        charge_note = f" after ₹{p['charges']:,.0f} charges" if p.get("charges") else ""
         return (
             f"{head} {ticker}*\n"
             f"{p['qty']} shares at ₹{p['exit_price']:,.2f}\n"
-            f"{money}  (bought at ₹{p['entry']:,.2f})\n"
+            f"{money}{charge_note}  (bought at ₹{p['entry']:,.2f})\n"
             f"{p['reason']}"
         )
     if event_type == "managed_buy":

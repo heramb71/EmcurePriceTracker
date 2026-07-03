@@ -618,3 +618,106 @@ def test_halt_never_blocks_an_exit():
     ev = _dry({"price": 895.0, "day_high": 1000.0, "day_low": 1000.0})   # live price under stop
     d = [e[1] for e in ev if e[0] == "managed_dryrun"]
     assert d and d[0]["decision"] == "exit_sl"
+
+
+# ── Stop ratchet: the resting exchange stop follows the touched floor ─────────
+
+def test_touched_floor_from_high_since_entry():
+    pos = {"entry": 1000.0, "high_since_entry": 1005.0}
+    assert mc._touched_floor(pos, _mcfg()) is None            # nothing printed yet
+    pos = {"entry": 1000.0, "high_since_entry": 1022.0}
+    assert mc._touched_floor(pos, _mcfg()) == 1020.0          # T2 is the floor
+    pos = {"entry": 1000.0, "high_since_entry": 1031.0}
+    assert mc._touched_floor(pos, _mcfg()) == 1030.0          # top rung
+
+
+class _RatchetBroker:
+    """Live-mode broker stub: tracks the resting stop, never fills orders."""
+    def __init__(self, held=8):
+        self._held = held
+        self.cancelled: list[str] = []
+        self.stops: list[tuple[int, float]] = []
+        self._n = 0
+
+    def held_qty(self, ticker):
+        return self._held
+
+    def is_authenticated(self):
+        return False                       # keep the quote price (no LTP override)
+
+    def order_state(self, order_id):
+        return "TRIGGER PENDING"
+
+    def cancel(self, order_id):
+        self.cancelled.append(order_id)
+        return True
+
+    def place_stop_loss(self, ticker, qty, trigger, **kw):
+        self.stops.append((qty, round(trigger, 2)))
+        self._n += 1
+        return f"STOP{self._n}"
+
+    def place_order_and_confirm(self, *a, **k):   # hold path must never sell
+        raise AssertionError("order placed during a hold")
+
+
+def test_hold_ratchets_resting_stop_to_touched_floor():
+    cfg = ManagedConfig(
+        enabled=True, live=True, targets=(10.0, 20.0, 30.0), sl_rupees=100.0,
+        qty=8, reentry_gap=20.0, reach_min_prob=50.0, max_daily_loss=800.0,
+        reentry_cooldown_min=60.0, block_reentry_after_stop=True,
+    )
+    mc.set_position(1000.0, 8, cfg)                   # sl = 900
+    mc._update_position(stop_order_id="OLD", stop_trigger=900.0)
+    broker = _RatchetBroker()
+
+    # Price prints T2 (1020) and holds above it → the stop must lift 900 → 1020.
+    mc.step("EMCURE", {"price": 1022.0, "day_high": 1022.0, "day_low": 1000.0},
+            broker, cfg)
+    assert broker.cancelled == ["OLD"]
+    assert broker.stops == [(8, 1020.0)]
+    assert mc.get_position()["stop_trigger"] == 1020.0
+
+    # Same conditions again → already at the floor, no churn.
+    mc.step("EMCURE", {"price": 1022.0, "day_high": 1022.0, "day_low": 1000.0},
+            broker, cfg)
+    assert len(broker.stops) == 1 and len(broker.cancelled) == 1
+
+
+# ── Net-of-charges exits: tally, ledger, and return value ─────────────────────
+
+def test_record_exit_books_net_into_day_tally_and_ledger(monkeypatch, tmp_path):
+    from src.shared.costs import round_trip_charges
+    monkeypatch.setenv("EMCURE_DB_PATH", str(tmp_path / "emcure.db"))
+    mc.set_position(1000.0, 8, _mcfg())
+    now = mc._now_ist()
+
+    net, charges = mc._record_exit(160.0, is_stop=False, now=now, ticker="EMCURE",
+                                   exit_price=1020.0, live=True)
+    expected_charges = round_trip_charges(1000.0, 1020.0, 8)
+    assert charges == expected_charges
+    assert net == round(160.0 - expected_charges, 2)
+    assert mc._load()["realized_pnl_today"] == net       # kill-switch runs on net
+
+    from src.emcure import ledger
+    row = ledger.recent_trades(ledger.connect(), limit=1)[0]
+    assert row["charges"] == expected_charges and row["net_pnl"] == net
+
+
+# ── Percentage re-entry gap (opt-in; default unchanged) ───────────────────────
+
+def test_pct_gap_scales_the_reentry_trigger():
+    cfg = _cfg(reentry_gap_pct=1.4)
+    flat_market = {"price": 1385.0, "day_high": 1400.0, "day_low": 1380.0,
+                   "sma7": 1400.0, "trend_7d": "Choppy"}
+    # threshold = 1400 × 1.4% = ₹19.60 → a ₹18 gap waits, a ₹20 gap re-enters.
+    d = decide(None, {**flat_market, "gap": -18.0}, cfg)
+    assert d.action == "wait"
+    d = decide(None, {**flat_market, "gap": -20.0}, cfg)
+    assert d.action == "reenter"
+
+
+def test_rupee_gap_unchanged_when_pct_unset():
+    d = decide(None, {"price": 1385.0, "gap": -20.0, "sma7": 1400.0,
+                      "trend_7d": "Choppy"}, _cfg())
+    assert d.action == "reenter"

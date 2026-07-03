@@ -15,6 +15,7 @@ from typing import Callable
 import requests
 
 from src.notify.alerts import send_alert
+from src.shared import heartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,9 @@ def run_command_bot(
     offset = 0
     while True:
         try:
+            # Liveness for the command channel: if this poller wedges, EXIT/SELL
+            # commands silently vanish — the watchdog alarms on a stale beat.
+            heartbeat.beat("emcure-bot", path=heartbeat.component_path("emcure-bot"))
             updates = _get_updates(token, offset)
             for upd in updates:
                 offset = upd["update_id"] + 1

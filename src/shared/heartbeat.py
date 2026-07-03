@@ -27,6 +27,13 @@ def _path(path: Optional[str]) -> str:
     return path or os.getenv("HEARTBEAT_FILE") or _DEFAULT_PATH
 
 
+def component_path(component: str) -> str:
+    """Dedicated heartbeat file for a secondary component (e.g. ``emcure-bot``).
+    The default file belongs to the tracker; each extra component gets its own
+    ``heartbeat-<component>.json`` beside it so the watchdog can tell them apart."""
+    return os.path.join(os.path.dirname(_DEFAULT_PATH), f"heartbeat-{component}.json")
+
+
 def beat(component: str, *, path: Optional[str] = None) -> None:
     """Record that ``component`` is alive right now (epoch seconds + pid)."""
     write_json(_path(path), {"component": component, "ts": time.time(), "pid": os.getpid()})
