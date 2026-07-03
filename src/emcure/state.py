@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from src.shared.atomic_json import write_json
 from src.shared.costs import compute_charges
 
 logger = logging.getLogger(__name__)
@@ -45,8 +46,7 @@ def load_state(path: Path = STATE_FILE) -> dict[str, Any]:
 
 def save_state(state: dict[str, Any], path: Path = STATE_FILE) -> None:
     try:
-        with open(path, "w") as f:
-            json.dump(state, f, indent=2, default=str)
+        write_json(path, state, default=str)
     except Exception:
         logger.exception("save_state failed")
 

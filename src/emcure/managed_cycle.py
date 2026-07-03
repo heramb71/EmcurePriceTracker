@@ -24,12 +24,13 @@ strategies never share a record).
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+from src.shared.atomic_json import read_json, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -197,16 +198,11 @@ def decide(position: Optional[dict], market: dict, cfg: ManagedConfig) -> Decisi
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _load() -> dict:
-    try:
-        with open(_STATE_FILE) as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+    return read_json(_STATE_FILE, {})
 
 
 def _save(state: dict) -> None:
-    with open(_STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2)
+    write_json(_STATE_FILE, state)
 
 
 def get_position() -> Optional[dict]:
