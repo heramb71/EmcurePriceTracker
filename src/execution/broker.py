@@ -99,8 +99,8 @@ class KiteBroker:
         Requires kiteconnect, pyotp, and requests packages.
         """
         try:
-            import requests as req
             import pyotp
+            import requests as req
 
             s = req.Session()
             s.headers.update({"User-Agent": "Mozilla/5.0"})
@@ -507,7 +507,7 @@ def kite_execution_status(today: date | None = None) -> dict:
 
     # 4. NSE holiday check
     try:
-        from src.shared.holidays import is_market_holiday, get_holiday_name
+        from src.shared.holidays import get_holiday_name, is_market_holiday
         is_holiday = is_market_holiday(today)
     except Exception:
         is_holiday = False

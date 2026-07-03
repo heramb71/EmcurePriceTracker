@@ -8,7 +8,6 @@ so it is cheap to call per bar across a 3-year window.
 """
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 
 W_RVOL = 30.0

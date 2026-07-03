@@ -17,9 +17,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from src.market_intel.sentiment import load_sentiment_model
-from src.notify.alerts import send_whatsapp_alert, format_whatsapp_alert
 from apps.main import _refresh
+from src.market_intel.sentiment import load_sentiment_model
+from src.notify.alerts import format_whatsapp_alert, send_whatsapp_alert
 
 TICKER = os.getenv("TICKER", "EMCURE")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")

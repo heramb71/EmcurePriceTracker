@@ -25,12 +25,13 @@ os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 import pandas as pd
 import yfinance as yf
 
-from src.emcure.backtest import run_backtest, print_report, format_whatsapp_report
+from src.emcure.backtest import format_whatsapp_report, print_report, run_backtest
 
 
 def _fetch(ticker: str) -> pd.DataFrame:

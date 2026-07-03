@@ -10,12 +10,13 @@ For a systemd deployment, see deploy/emcure_price_tracker.service.
 """
 
 import argparse
+import logging
 import os
 import sys
 import time
-import logging
 from argparse import ArgumentParser
-from datetime import datetime, time as dtime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
+from datetime import time as dtime
 from pathlib import Path
 
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
@@ -43,27 +44,27 @@ def _warn_if_env_world_readable() -> None:
         pass
 
 
-from src.market_intel.sentiment import load_sentiment_model
-from src.shared.holidays import is_market_holiday, format_holiday_alert
+from apps.main import _refresh
+from src.emcure.predictor import (
+    format_eod_summary,
+    format_post_open_briefing,
+    format_pre_open_briefing,
+)
+from src.emcure.state import load_state, save_state
+from src.emcure.trade_manager import check_and_mark, format_target_alert
 from src.execution.broker import KiteBroker
+from src.market_intel.sentiment import load_sentiment_model
 from src.notify import channels
 from src.notify.alerts import (
-    send_alert,
-    send_whatsapp_alert,
     format_alert,
-    format_whatsapp_alert,
-    format_position_open_alert,
     format_partial_alert,
     format_position_close_alert,
+    format_position_open_alert,
+    format_whatsapp_alert,
+    send_alert,
+    send_whatsapp_alert,
 )
-from src.emcure.predictor import (
-    format_pre_open_briefing,
-    format_post_open_briefing,
-    format_eod_summary,
-)
-from src.emcure.trade_manager import check_and_mark, format_target_alert
-from src.emcure.state import load_state, save_state
-from apps.main import _refresh
+from src.shared.holidays import format_holiday_alert, is_market_holiday
 
 logging.basicConfig(
     level=logging.INFO,
@@ -208,7 +209,7 @@ def _dispatch_alerts(
     # show (targets, stop, re-entry) matches what the cycle actually trades.
     managed_block = None
     if managed_active:
-        from src.emcure.managed_cycle import ManagedConfig, get_position, format_levels_block
+        from src.emcure.managed_cycle import ManagedConfig, format_levels_block, get_position
         _mc_cfg = ManagedConfig.from_env()
         _mc_sma7 = float((data.get("sma7_gap") or {}).get("sma7", 0) or 0)
         managed_block = format_levels_block(

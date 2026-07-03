@@ -40,8 +40,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from src.notify.alerts import send_whatsapp_alert, send_alert
-from src.notify import channels
 from src.crypto.data import fetch_crypto_daily, fetch_crypto_quote, fetch_usd_inr
 from src.crypto.messages import (
     format_evening_summary,
@@ -49,6 +47,8 @@ from src.crypto.messages import (
     format_signal_alert,
 )
 from src.crypto.signals import compute_crypto_signal, is_alert_worthy
+from src.notify import channels
+from src.notify.alerts import send_alert, send_whatsapp_alert
 
 logging.basicConfig(
     level=logging.INFO,

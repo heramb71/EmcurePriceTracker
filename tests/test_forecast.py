@@ -1,9 +1,8 @@
 import numpy as np
 import pandas as pd
-import pytest
 
-from emcure_tracker.indicators import compute_all
 from emcure_tracker.forecast import compute_forecast
+from emcure_tracker.indicators import compute_all
 
 
 def _make_df(n: int = 80, seed: int = 7) -> pd.DataFrame:

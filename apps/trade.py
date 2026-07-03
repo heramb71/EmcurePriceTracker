@@ -20,9 +20,10 @@ os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
-from src.emcure.trade_manager import set_trade, clear_trade, get_trade, current_pnl
+from src.emcure.trade_manager import clear_trade, current_pnl, get_trade, set_trade
 
 CAPITAL     = float(os.getenv("CAPITAL", "100000"))
 RISK_RUPEES = float(os.getenv("RISK_RUPEES", "4500"))

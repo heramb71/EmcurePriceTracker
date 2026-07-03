@@ -18,8 +18,8 @@ from typing import Callable, Optional
 
 import pandas as pd
 
-from src.shared.data import fetch_daily, fetch_intraday
 from src.radar import store
+from src.shared.data import fetch_daily, fetch_intraday
 
 logger = logging.getLogger(__name__)
 

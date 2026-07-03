@@ -375,7 +375,8 @@ def test_levels_block_includes_reach_odds_and_chosen_target():
 # ── Phase 2 safety guards: kill-switch, cooldown, stop-out, external close ────
 
 from datetime import datetime, timedelta, timezone
-from src.emcure.managed_cycle import reentry_blocked, set_position, get_position
+
+from src.emcure.managed_cycle import get_position, reentry_blocked, set_position
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 _NOW = datetime(2026, 6, 18, 11, 0, tzinfo=_IST)

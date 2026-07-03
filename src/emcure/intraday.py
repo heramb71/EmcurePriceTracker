@@ -8,7 +8,8 @@ Intraday strategy engine — aligned with the user's trading rules:
 """
 from __future__ import annotations
 
-from datetime import datetime, time as time_type, timedelta
+from datetime import datetime, timedelta
+from datetime import time as time_type
 from typing import Optional
 
 import numpy as np

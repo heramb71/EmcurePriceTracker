@@ -14,21 +14,21 @@ Or use:   ./start_bot.sh   (starts bot + ngrok tunnel together)
 from __future__ import annotations
 
 import os
-import sys
 
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
-from flask import Flask, request, Response
+from flask import Flask, Response, request
 from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from src.emcure.trade_manager import set_trade, clear_trade, get_trade, current_pnl
 from src.emcure.state import load_state
+from src.emcure.trade_manager import clear_trade, current_pnl, get_trade, set_trade
 from src.notify import channels
 
 app = Flask(__name__)
@@ -227,10 +227,11 @@ def _handle_kite(parts: list[str]) -> str:
 def _handle_crypto(parts: list[str]) -> str:
     """On-demand BTC/ETH summary (same read as the 8 AM / 8 PM briefings)."""
     try:
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta, timezone
+
         from src.crypto.data import fetch_crypto_daily, fetch_crypto_quote, fetch_usd_inr
-        from src.crypto.signals import compute_crypto_signal
         from src.crypto.messages import format_evening_summary
+        from src.crypto.signals import compute_crypto_signal
 
         ist = timezone(timedelta(hours=5, minutes=30))
         usd = fetch_usd_inr()
@@ -398,6 +399,7 @@ def _start_telegram_bot() -> None:
     if not TELEGRAM_TOKEN:
         return
     import threading
+
     from src.notify.telegram_bot import run_command_bot
 
     t = threading.Thread(

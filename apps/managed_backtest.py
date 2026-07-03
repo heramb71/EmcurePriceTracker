@@ -18,13 +18,14 @@ Daily-bar approximation (yfinance only serves ~60d of intraday):
 from __future__ import annotations
 
 import sys
+
 import numpy as np
 import pandas as pd
 
-from src.shared.data import fetch_daily
+from src.emcure.intraday import classify_7d_trend
 from src.emcure.managed_cycle import ManagedConfig, decide
 from src.shared.costs import net_pnl
-from src.emcure.intraday import classify_7d_trend
+from src.shared.data import fetch_daily
 
 # Strategy params — match the live managed-cycle (server .env / defaults).
 TARGETS = (15.0, 20.0, 30.0)

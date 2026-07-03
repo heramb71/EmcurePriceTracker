@@ -1,0 +1,32 @@
+# Tooling config. No build system — this project runs as modules from the repo
+# root (python -m apps.<name>), it is not packaged/installed.
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv", "venv"]
+
+[tool.ruff.lint]
+# Enforce the rules that catch real bugs; stay lenient on cosmetic ones the
+# codebase deliberately diverges from.
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E402",  # import not at top — entry points load_dotenv()/configure logging first
+    "E501",  # line length — long alert strings and tables are intentional
+    "E741",  # ambiguous var names (l, I) — a few short-lived locals
+    "F541",  # f-string without placeholders — used for uniform alert-block styling
+    "E701",  # multiple statements on one line (colon) — compact guards
+    "E731",  # lambda assignment — a few tiny inline helpers
+    # Ratcheted off for now — pre-existing dead assignments scattered across
+    # research tools + the soon-to-be-deleted apps/emcure_tracker.py. Phase 3
+    # code-health pass cleans these and re-enables both.
+    "F841",  # local variable assigned but never used
+    "E702",  # multiple statements on one line (semicolon)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests intentionally build partial fixtures and re-import under different names.
+"tests/**" = ["F841"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -12,7 +12,7 @@ from datetime import datetime
 import pytest
 
 from apps import main_headless
-from apps.main_headless import _next_wake_target, _IST
+from apps.main_headless import _IST, _next_wake_target
 
 
 def _ist(y: int, m: int, d: int, hh: int, mm: int) -> datetime:

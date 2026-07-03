@@ -18,29 +18,23 @@ Usage:
 import os
 import sys
 import time
-import math
-import requests
-import feedparser
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-from collections import deque
+from datetime import datetime
 from typing import Optional
+
+import feedparser
+import numpy as np
+import pandas as pd
+import requests
+from rich import box
+from rich.align import Align
 
 # --- Rich terminal UI ---
 from rich.console import Console
 from rich.layout import Layout
+from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-from rich.live import Live
-from rich.columns import Columns
-from rich.align import Align
-from rich import box
-from rich.style import Style
-from rich.progress_bar import ProgressBar
-from rich.rule import Rule
-from rich.padding import Padding
 
 # --- Sentiment ---
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
@@ -81,7 +75,7 @@ def fetch_daily_data(symbol: str, api_key: str) -> Optional[pd.DataFrame]:
     try:
         resp = requests.get(url, timeout=15)
         data = resp.json()
-    except Exception as e:
+    except Exception:
         return None
 
     ts_key = "Time Series (Daily)"

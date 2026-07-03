@@ -12,13 +12,13 @@ from typing import Optional
 from src.radar.features import StockFeatures
 from src.radar.regime import TRENDING_BEAR, TRENDING_BULL
 from src.radar.signals import (
+    _SMA7_GAP_FRAC,
     ATR_BREAKOUT,
     GAP_REVERSION,
     RVOL_REVERSAL,
     SMA7_REVERSION,
-    _SMA7_GAP_FRAC,
-    SignalHit,
     VWAP_PULLBACK,
+    SignalHit,
 )
 
 _IST = timezone(timedelta(hours=5, minutes=30))

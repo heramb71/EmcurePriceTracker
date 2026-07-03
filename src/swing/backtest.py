@@ -14,7 +14,6 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-import numpy as np
 import pandas as pd
 
 from src.shared.costs import compute_charges
@@ -23,7 +22,7 @@ from . import indicators as ind
 from . import signals as sig
 from .regime import TRENDING_BULL, regime_series
 from .scanner import SCORE_GATE, score_frame
-from .universe import NIFTY, avg_traded_value_cr, MIN_AVG_TRADED_VALUE_CR
+from .universe import MIN_AVG_TRADED_VALUE_CR
 
 # CDSL depository participant charge on the SELL leg (₹13.5 + 18% GST), per scrip.
 DP_CHARGE = 15.93

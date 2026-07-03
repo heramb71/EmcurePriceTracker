@@ -6,7 +6,6 @@ Uses dataclasses for runtime validation and IDE autocomplete support.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass

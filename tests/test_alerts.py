@@ -6,9 +6,8 @@ failure, and never raise.
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
 
 import requests
 
