@@ -54,6 +54,7 @@ declare -A UNIT_SRC=(
   [bot_server]="$APP_DIR/deploy/bot.service"
   [radar_headless]="$APP_DIR/deploy/radar.service"
   [crypto_headless]="$APP_DIR/deploy/crypto.service"
+  [kittybot_headless]="$APP_DIR/deploy/kittybot.service"
 )
 
 # Pull the app module out of a unit's ExecStart, handling both the current
@@ -98,6 +99,16 @@ info "Installing backup timer ..."
 install -m 644 "$APP_DIR/deploy/backup.service" /etc/systemd/system/emcure-backup.service
 install -m 644 "$APP_DIR/deploy/backup.timer"   /etc/systemd/system/emcure-backup.timer
 
+# ── 2d. KittyBot pre-market screener (oneshot service + 08:45 IST timer) ──────
+# Ranks the kitty universe into daily_picks.json before the open. Installed only
+# when the KittyBot service is present on this box, so radar-only deployments are
+# untouched. The trading bot (emcure-kittybot) falls back gracefully if it's absent.
+if [[ -f /etc/systemd/system/emcure-kittybot.service ]]; then
+  info "Installing kitty-screener timer ..."
+  install -m 644 "$APP_DIR/deploy/kitty_screener.service" /etc/systemd/system/emcure-kitty-screener.service
+  install -m 644 "$APP_DIR/deploy/kitty_screener.timer"   /etc/systemd/system/emcure-kitty-screener.timer
+fi
+
 # ── 3. discover this project's services (name-agnostic, by WorkingDirectory) ──
 mapfile -t UNITS < <(grep -lFx "WorkingDirectory=$APP_DIR" /etc/systemd/system/*.service 2>/dev/null || true)
 [[ ${#UNITS[@]} -gt 0 ]] || die "No services found running from $APP_DIR — run the first-time setup script."
@@ -105,9 +116,10 @@ mapfile -t UNITS < <(grep -lFx "WorkingDirectory=$APP_DIR" /etc/systemd/system/*
 SERVICES=()
 for unit in "${UNITS[@]}"; do
   svc=$(basename "$unit" .service)
-  # The watchdog is a oneshot (fired by its timer) — never restart it as a
-  # long-running service or health-check it for `active`, which it never is.
-  [[ "$svc" == *watchdog* ]] && continue
+  # Oneshot timer-fired jobs (watchdog, kitty-screener) run from $APP_DIR but are
+  # not long-running services — never restart them here or health-check for
+  # `active`, which they never are between timer firings.
+  [[ "$svc" == *watchdog* || "$svc" == *screener* ]] && continue
   SERVICES+=("$svc")
   app=$(extract_app "$unit")
   src="${UNIT_SRC[$app]:-}"
@@ -127,6 +139,9 @@ info "Reloading systemd and restarting services ..."
 systemctl daemon-reload
 systemctl enable --now emcure-watchdog.timer >/dev/null 2>&1 || warn "watchdog timer not enabled"
 systemctl enable --now emcure-backup.timer   >/dev/null 2>&1 || warn "backup timer not enabled"
+if [[ -f /etc/systemd/system/emcure-kitty-screener.timer ]]; then
+  systemctl enable --now emcure-kitty-screener.timer >/dev/null 2>&1 || warn "kitty-screener timer not enabled"
+fi
 systemctl restart "${SERVICES[@]}"
 sleep 3
 

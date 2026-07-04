@@ -1,0 +1,60 @@
+# KittyBot — intraday single-stock trader configuration.
+#
+# Every threshold the bot uses lives here. Values map 1:1 onto
+# src/kittybot/config.py::KittyBotConfig; anything omitted falls back to the
+# dataclass default. A small set of deploy/safety knobs can also be overridden
+# by environment variables (KITTYBOT_LIVE, KITTYBOT_BROKER, KITTYBOT_CAPITAL,
+# KITTYBOT_RISK_PCT, KITTYBOT_PICKS_PATH) so the server flips paper→live without
+# editing the repo.
+
+[capital]
+capital = 100000.0          # trading capital in ₹
+risk_per_trade_pct = 1.0    # max % of capital risked per trade
+reward_risk_ratio = 2.0     # target : stop — 2:1 means stop = half the target
+
+[picks]
+picks_path = "daily_picks.json"
+picks_max_age_hours = 24.0  # skip the day entirely if the file is older than this
+max_picks = 5               # consider only the top-N ranked candidates
+# Used ONLY when daily_picks.json is missing/unreadable. These carry no scores,
+# so the bot trades them purely on the opening-range breakout with default
+# target/stop percentages.
+fallback_universe = [
+    "ADANIENT", "ADANIGREEN", "ADANIPOWER", "ADANIENSOL", "TATAMOTORS", "VEDL",
+    "JINDALSTEL", "HINDALCO", "TATASTEEL", "BANKBARODA", "CANBK", "PNB",
+    "INDUSINDBK", "BEL", "HAL", "CGPOWER", "TATAPOWER", "JSWENERGY", "TRENT",
+    "IRFC", "PFC", "RECLTD", "ETERNAL", "SWIGGY", "LODHA", "DLF", "DIXON",
+    "MOTHERSON", "SHRIRAMFIN", "JIOFIN", "NAUKRI", "VBL",
+]
+
+[filters]
+gap_max_pct = 1.5           # discard a pick gapping > this % vs prev close at open
+
+[screener]                  # kitty_screener.py → daily_picks.json (pre-market 08:45)
+screen_min_adtv_cr = 100.0  # liquidity floor (₹ crore avg daily traded value) to qualify
+screen_lookback_days = 60   # window for range / hit-rate / long-short-room stats
+
+[opening_range]
+opening_range_minutes = 15
+breakout_volume_multiple = 1.0   # breakout-bar volume must be ≥ this × average
+
+[timing]                    # IST wall-clock, "HH:MM"
+observe_start = "09:15"     # opening range starts here — no trading inside the window
+select_time = "09:30"       # earliest a breakout may be selected as the day's trade
+no_trade_after = "10:30"    # if nothing triggered by now, no trade today
+breakeven_trigger_pct = 1.0 # move the stop to breakeven once price is + this %
+hard_exit = "15:10"         # force-close any open position at/after this time
+
+[safety]
+vix_spike_pct = 15.0        # skip the day if India VIX is up > this % at select_time
+max_consecutive_losing_days = 3   # after this many, halt and resume next week
+
+[execution]
+broker = "paper"            # paper | kite | upstox
+live = false               # real orders ONLY when live = true AND broker != "paper"
+product = "MIS"            # intraday product
+
+[notify]
+telegram_service = "radar"  # reuse the radar Telegram feed (the scanner it replaces)
+journal_dir = "kittybot_journal"
+state_path = "kittybot_state.json"

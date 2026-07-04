@@ -390,6 +390,103 @@ any future crypto execution:
 
 ---
 
+## KittyBot — intraday single-stock trader (`src/kittybot/`, `apps/kittybot_headless.py`)
+
+A **separate, self-contained** intraday trader that **picks ONE stock per day**
+from a pre-ranked *kitty* (`daily_picks.json`, written by a separate pre-market
+screener) and trades its opening-range breakout to a 2–5% target. **This is the
+"Radar Bot" from the build spec — deliberately NOT named `radar` because
+`src/radar/` is already the read-only scanner.** KittyBot *does* place orders, but
+only through a pluggable broker and only when explicitly flagged live; otherwise
+it **paper-trades** and journals everything.
+
+**Daily flow** (state machine in `engine.py`, driven by `step(now)` each tick):
+1. **09:15 prepare** — load the kitty; skip the day if it's stale (>24h) or a
+   loss-streak halt is active; discard picks with earnings today or an opening
+   gap > 1.5% vs prev close.
+2. **09:30+ enter** — VIX rail (skip if India VIX up >15% intraday), build each
+   survivor's 15-min opening range, take the **single strongest** breakout (LONG
+   above the range high / SHORT below the low, and only when
+   `short_room ≥ long_room`) on above-average volume, size to **≤1% capital
+   risk**, place ONE entry. No trigger by 10:30 → no trade.
+3. **manage** — ratchet the stop to breakeven at +1%; exit on target/stop; **hard
+   time-exit at 15:10 IST** regardless of P&L. One position/day, no re-entry.
+
+**Modules** (risk-bearing logic is pure + unit-tested in isolation):
+- `config.py` — every threshold, from `config/kittybot.toml` (+ env override of
+  the deploy/safety knobs); `picks.py` — load/parse the kitty or fall back to the
+  configured universe; `filters.py` — earnings/gap discards; `opening_range.py` —
+  build the range + breakout triggers; `selection.py` — the single-trade pick;
+  `risk.py` — sizing, levels, breakeven, exits, P&L; `safety.py` — VIX/staleness/
+  loss-streak circuit breakers; `state.py` — crash-safe position + streak +
+  halt (atomic_json); `journal.py` — append-only per-day decision log
+  (`kittybot_journal/kittybot-YYYY-MM-DD.jsonl`, **every skip logged**);
+  `broker.py` — `Broker` protocol + `PaperBroker` (default) / `KiteBroker` (MIS) /
+  `UpstoxBroker`; `marketdata.py` — the only yfinance boundary; `engine.py` — the
+  orchestrator.
+
+**Telegram alerts** — `src/kittybot/notify.py`. KittyBot **reuses the `radar`
+Telegram feed** (`TELEGRAM_RADAR_TOKEN`/`_CHAT_ID`, via `channels.telegram_config`)
+— it inherits the bot you already watch, so retiring the scanner just changes what
+that bot sends, no new channel/creds. It pushes the decisions it *takes* (not
+radar's "review manually" ideas): the morning kitty (post-filter watchlist), skips
+(VIX / stale / halt / no-breakout) so a quiet day is explained, the single entry
+(symbol/direction/entry/target/stop/qty), the breakeven move, and the exit with
+P&L. Telegram-only, matching radar. The `KittyNotifier` is optional/injected —
+`None` (or an unconfigured channel) degrades to journal-only, so alerts never block
+trading. The feed is set by `telegram_service` in `config/kittybot.toml`
+(default `"radar"`).
+
+**Safety posture:** paper by default. `make_broker` refuses to build a live
+broker unless `KITTYBOT_LIVE=true` **and** `KITTYBOT_BROKER` is `kite`/`upstox`.
+All thresholds are checked-in config; `daily_picks.json`, `kittybot_state.json`,
+and `kittybot_journal/` are runtime artifacts (gitignored).
+
+**Pre-market screener** — `src/kittybot/screener.py` + `apps/kitty_screener.py`.
+The "separate screener" that produces the ranked kitty. At 08:45 IST (via
+`emcure-kitty-screener.timer`) it scans the kitty universe (`fallback_universe` in
+the config), computes per-symbol **liquidity** (ADTV gate, ₹100 Cr default),
+**volatility** (ATR%, avg daily range%), and **2%-reachability** (`hit_rate_2pct`
++ directional `long_room`/`short_room` = % of the last 60 sessions a 2% move was
+available), scores 0–100 (2%-reachability-dominant), and atomically writes the
+top-`max_picks` to `daily_picks.json`. Metric functions are pure (take a daily
+frame) and unit-tested; `suggested_target_pct` = ~60% of the typical daily range
+clamped to 2–5%, stop = target ÷ reward:risk. If the screener is missing/stale the
+bot degrades to the fallback universe (breakout-only, no ranking) — a screener
+failure never blocks the day, it just costs the ranked edge.
+
+**Run / deploy:**
+```bash
+python -m apps.kitty_screener             # write daily_picks.json (ranked kitty)
+python -m apps.kitty_screener --dry-run   # print the ranking, write nothing
+python -m apps.kittybot_headless          # the trading service (paper by default)
+python -m pytest tests/kittybot           # 99 unit + integration tests
+# Deploy as its own service (leaves emcure-tracker/crypto untouched):
+sudo cp /opt/emcure/deploy/kittybot.service /etc/systemd/system/emcure-kittybot.service
+sudo systemctl daemon-reload && sudo systemctl enable --now emcure-kittybot
+# update.sh then auto-installs the 08:45 screener timer whenever the kittybot
+# service is present (deploy/kitty_screener.{service,timer}).
+```
+
+**Replacing the radar scanner** — KittyBot supersedes the read-only `src/radar/`
+scanner (which alerted trade *ideas* for manual review but never traded). The
+swap is at the **deployment level only** — the radar code + `radar.db` outcome
+history stay in the repo, dormant, so it's reversible:
+```bash
+# on the server, after 15:30 IST (update.sh refuses market hours):
+sudo systemctl disable --now emcure-radar
+sudo rm /etc/systemd/system/emcure-radar.service   # so update.sh won't rediscover it
+sudo bash /opt/emcure/deploy/update.sh             # installs/starts emcure-kittybot + screener
+```
+KittyBot reuses the radar Telegram bot (`TELEGRAM_RADAR_TOKEN`/`_CHAT_ID`), so once
+the scanner service is off, the same bot simply starts sending KittyBot's alerts —
+no `.env` change needed.
+`update.sh` discovers services by `WorkingDirectory`, so once `emcure-radar` is
+removed it stops being managed, and `emcure-kittybot` + the screener timer take
+over. To restore radar, re-copy `deploy/radar.service` and re-enable it.
+
+---
+
 ## src/emcure/trade_manager.py
 
 Manual trade state persistence for T1/T2/T3/SL alert monitoring.

@@ -34,6 +34,9 @@ htmlcov/
 strategy_state.json
 trade_state.json
 alerts_sent.json
+kittybot_state.json
+kittybot_journal/
+daily_picks.json
 radar.db
 radar.db-wal
 radar.db-shm

@@ -14,6 +14,10 @@ Each service owns its own Telegram bot so the three feeds never mix:
     │ "crypto"   │ TELEGRAM_CRYPTO_TOKEN        │ TELEGRAM_CRYPTO_CHAT_ID   │
     └────────────┴──────────────────────────────┴───────────────────────────┘
 
+KittyBot (the intraday trader that supersedes the radar scanner) reuses the
+``radar`` feed above — it inherits the bot you already watch, so retiring the
+scanner just changes what that bot sends, not where.
+
 Any per-service value left blank falls back to the shared ``TELEGRAM_TOKEN`` /
 ``TELEGRAM_CHAT_ID`` — so an existing single-bot deployment keeps working
 unchanged, and you can split feeds out one bot at a time.
@@ -22,7 +26,7 @@ from __future__ import annotations
 
 import os
 
-# The three isolated alert feeds. Keep in sync with the env table above.
+# The isolated alert feeds. Keep in sync with the env table above.
 SERVICES = ("emcure", "radar", "crypto")
 
 

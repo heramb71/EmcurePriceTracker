@@ -1,0 +1,25 @@
+[Unit]
+Description=KittyBot — intraday single-stock trader (paper by default; picks ONE stock/day from the kitty)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=emcure
+Group=emcure
+WorkingDirectory=/opt/emcure
+ExecStart=/opt/emcure/venv/bin/python3 -m apps.kittybot_headless
+Restart=always
+RestartSec=15
+EnvironmentFile=/opt/emcure/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=LOKY_MAX_CPU_COUNT=1
+Environment=OMP_NUM_THREADS=1
+# Paper-trades unless BOTH are set: KITTYBOT_LIVE=true AND KITTYBOT_BROKER=kite|upstox
+# Environment=KITTYBOT_LIVE=false
+# Environment=KITTYBOT_BROKER=paper
+StandardOutput=append:/var/log/emcure/kittybot.log
+StandardError=append:/var/log/emcure/kittybot.err
+
+[Install]
+WantedBy=multi-user.target

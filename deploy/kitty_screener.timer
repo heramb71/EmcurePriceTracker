@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the KittyBot pre-market screener at 08:45 IST on trading days
+
+[Timer]
+# 08:45 Asia/Kolkata, Mon–Fri (~30 min before the 09:15 open, so daily_picks.json
+# is fresh for the 09:00 prepare). The timezone suffix is honoured by modern
+# systemd; Persistent catches a run missed while the box was down.
+OnCalendar=Mon..Fri *-*-* 08:45:00 Asia/Kolkata
+Persistent=true
+AccuracySec=1min
+Unit=emcure-kitty-screener.service
+
+[Install]
+WantedBy=timers.target

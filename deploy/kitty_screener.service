@@ -1,0 +1,17 @@
+[Unit]
+Description=KittyBot pre-market screener — ranks the kitty into daily_picks.json (oneshot, fired by the timer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=emcure
+Group=emcure
+WorkingDirectory=/opt/emcure
+ExecStart=/opt/emcure/venv/bin/python3 -m apps.kitty_screener
+EnvironmentFile=/opt/emcure/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=LOKY_MAX_CPU_COUNT=1
+Environment=OMP_NUM_THREADS=1
+StandardOutput=append:/var/log/emcure/kitty_screener.log
+StandardError=append:/var/log/emcure/kitty_screener.err
