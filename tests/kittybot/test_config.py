@@ -71,3 +71,19 @@ def test_bad_env_value_ignored(tmp_path, monkeypatch):
     monkeypatch.setenv("KITTYBOT_CAPITAL", "not-a-number")
     cfg = load_config(tmp_path / "absent.toml")
     assert cfg.capital == KittyBotConfig().capital
+
+
+def test_load_config_without_toml_parser_degrades_to_defaults(tmp_path, monkeypatch):
+    # Python 3.10 with no tomli installed: config file is ignored, not fatal.
+    path = tmp_path / "kittybot.toml"
+    path.write_text("[capital]\ncapital = 999999.0\n")
+    monkeypatch.setattr("src.kittybot.config.tomllib", None)
+    cfg = load_config(path)
+    assert cfg.capital == KittyBotConfig().capital  # file skipped, default kept
+
+
+def test_env_override_still_applies_without_toml_parser(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.kittybot.config.tomllib", None)
+    monkeypatch.setenv("KITTYBOT_CAPITAL", "250000")
+    cfg = load_config(tmp_path / "kittybot.toml")
+    assert cfg.capital == 250000.0  # env path is independent of the TOML parser

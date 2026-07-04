@@ -11,10 +11,20 @@ from __future__ import annotations
 
 import logging
 import os
-import tomllib
 from dataclasses import dataclass, fields, replace
 from datetime import time as dtime
 from pathlib import Path
+
+# tomllib is stdlib only on Python 3.11+. The deploy target runs 3.10, so fall
+# back to the `tomli` backport (in requirements-core.txt); if neither is present,
+# degrade to defaults+env rather than crashing at import.
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:  # pragma: no cover - exercised on the 3.10 server
+    try:
+        import tomli as tomllib
+    except ModuleNotFoundError:
+        tomllib = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -151,13 +161,17 @@ def load_config(path: str | os.PathLike[str] | None = None) -> KittyBotConfig:
     """
     cfg_path = Path(path) if path is not None else _DEFAULT_CONFIG_PATH
     values: dict = {}
-    try:
-        with open(cfg_path, "rb") as fh:
-            values = _flatten_toml(tomllib.load(fh))
-    except FileNotFoundError:
-        logger.info("kittybot config %s not found — using defaults", cfg_path)
-    except (tomllib.TOMLDecodeError, OSError):
-        logger.exception("kittybot config %s unreadable — using defaults", cfg_path)
+    if tomllib is None:
+        logger.warning("no TOML parser (need Python 3.11+ or the 'tomli' package) — "
+                       "kittybot config file ignored, using defaults + env")
+    else:
+        try:
+            with open(cfg_path, "rb") as fh:
+                values = _flatten_toml(tomllib.load(fh))
+        except FileNotFoundError:
+            logger.info("kittybot config %s not found — using defaults", cfg_path)
+        except (tomllib.TOMLDecodeError, OSError):
+            logger.exception("kittybot config %s unreadable — using defaults", cfg_path)
 
     cfg = replace(KittyBotConfig(), **values) if values else KittyBotConfig()
 
