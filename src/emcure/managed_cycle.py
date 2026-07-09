@@ -549,8 +549,38 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
     if decision.action in ("sell", "exit_sl"):
         return events + _execute_sell(ticker, decision, broker, now, cfg)
     if decision.action == "reenter":
-        return events + _execute_buy(ticker, decision, broker, cfg)
+        return events + _execute_buy(ticker, decision, broker, cfg, now)
     return events
+
+
+def _stop_was_protective(position: dict) -> bool:
+    """True when the resting stop sat at the original entry−SL level (a genuine
+    loss stop). A RATCHETED stop (trigger lifted to a touched-target floor) is a
+    profit floor — its fill books gains and must NOT set the same-day stop-out
+    block, or every floor exit would freeze re-entries for the day."""
+    sl = float(position.get("sl", 0))
+    trigger = float(position.get("stop_trigger") or sl)
+    return trigger <= sl
+
+
+def _book_stop_fill(ticker: str, position: dict, res: dict, cfg: ManagedConfig,
+                    now: datetime, reason: str) -> list[tuple[str, dict]]:
+    """Book a COMPLETE resting-stop fill as the position's exit (day tally,
+    cooldown, ledger — via _record_exit) and emit the sell event. Places no
+    orders. Shared by the settle path and the sell path's cancel-failed branch."""
+    entry   = float(position["entry"])
+    qty     = int(res["filled_qty"])
+    is_stop = _stop_was_protective(position)
+    pnl     = int(round((res["fill_price"] - entry) * qty))
+    net, charges = _record_exit(pnl, is_stop=is_stop, now=now, ticker=ticker,
+                                exit_price=res["fill_price"], live=cfg.live)
+    logger.warning("Managed-cycle STOP filled %d @ ₹%.2f  pnl=₹%d", qty, res["fill_price"], pnl)
+    return [("managed_sell", {
+        "ticker": ticker, "exit_price": res["fill_price"], "qty": qty,
+        "entry": entry, "pnl": pnl, "net": net, "charges": charges,
+        "label": "", "kind": "exit_sl" if is_stop else "sell",
+        "reason": reason,
+    })]
 
 
 def _settle_closed_position(ticker: str, position: dict, broker, cfg: ManagedConfig,
@@ -562,18 +592,8 @@ def _settle_closed_position(ticker: str, position: dict, broker, cfg: ManagedCon
     if cfg.live and stop_id and broker is not None:
         res = broker.order_result(stop_id)
         if res.get("status") == "COMPLETE" and res.get("filled_qty"):
-            entry = float(position["entry"])
-            qty   = int(res["filled_qty"])
-            pnl   = int(round((res["fill_price"] - entry) * qty))
-            net, charges = _record_exit(pnl, is_stop=True, now=now, ticker=ticker,
-                                        exit_price=res["fill_price"], live=cfg.live)
-            logger.warning("Managed-cycle STOP filled %d @ ₹%.2f  pnl=₹%d", qty, res["fill_price"], pnl)
-            return [("managed_sell", {
-                "ticker": ticker, "exit_price": res["fill_price"], "qty": qty,
-                "entry": entry, "pnl": pnl, "net": net, "charges": charges,
-                "label": "", "kind": "exit_sl",
-                "reason": "Resting stop-loss filled at the exchange",
-            })]
+            return _book_stop_fill(ticker, position, res, cfg, now,
+                                   reason="Resting stop-loss filled at the exchange")
     clear_position()
     logger.warning("Managed-cycle: broker shows 0 — position closed externally, clearing")
     return [("managed_closed_externally", {"ticker": ticker, "qty": position.get("qty")})]
@@ -630,10 +650,27 @@ def _execute_sell(ticker: str, decision: Decision, broker, now: datetime,
                   cfg: ManagedConfig) -> list[tuple[str, dict]]:
     events: list[tuple[str, dict]] = []
     pos = get_position() or {}
-    # Cancel the resting stop first so it can't also fire and double-sell.
+    # Cancel the resting stop first so it can't also fire and double-sell. If the
+    # cancel does NOT succeed, never fire the market sell blindly: a stop that
+    # already FILLED means the shares are gone (selling again goes short →
+    # short-delivery auction), and a stop still live at the exchange could fill
+    # in parallel. The ratchet makes this race likely, not exotic — the lifted
+    # trigger IS the floor decide() sells at on a pullback.
     stop_id = pos.get("stop_order_id")
-    if stop_id and broker is not None:
-        broker.cancel(stop_id)
+    if stop_id and broker is not None and not broker.cancel(stop_id):
+        res = broker.order_result(stop_id)
+        status = res.get("status")
+        if status == "COMPLETE" and res.get("filled_qty"):
+            return _book_stop_fill(ticker, pos, res, cfg, now,
+                                   reason="Resting stop filled at the exchange just before the sell")
+        if status not in ("CANCELLED", "REJECTED"):
+            # Can't cancel and can't prove the stop is dead — hold off this cycle
+            # rather than risk a double sell. Position untouched; retried next step.
+            logger.error("Managed-cycle SELL deferred — stop %s uncancellable (state=%s)",
+                         stop_id, status)
+            return [("managed_exit_failed", {
+                "ticker": ticker, "qty": decision.qty, "reason": decision.reason,
+            })]
     fill = broker.place_order_and_confirm(ticker, decision.qty, "SELL") if broker else None
     if broker and not fill:
         logger.error("Managed-cycle SELL did not fill — qty=%d", decision.qty)
@@ -657,12 +694,24 @@ def _execute_sell(ticker: str, decision: Decision, broker, now: datetime,
     return events
 
 
-def _execute_buy(ticker: str, decision: Decision, broker, cfg: ManagedConfig) -> list[tuple[str, dict]]:
+def _execute_buy(ticker: str, decision: Decision, broker, cfg: ManagedConfig,
+                 now: datetime) -> list[tuple[str, dict]]:
     if broker:
         held = broker.held_qty(ticker)
+        if held is not None and held < 0:
+            # The account reads net SHORT. Never buy into an unexplained state —
+            # and page loudly: a real short means a double sell happened (short-
+            # delivery auction risk); a phantom one means held_qty is misreading
+            # the broker. Deduped per day/value so it doesn't re-fire every cycle.
+            logger.error("Managed-cycle BUY skipped — broker reads SHORT %d", held)
+            if _set_once("last_reconcile_sig", f"short:{held}:{now.date()}"):
+                return [("managed_short_warn", {"ticker": ticker, "held": held})]
+            return []
         if held:
             logger.error("Managed-cycle BUY skipped — broker already holds %d", held)
-            return [("managed_reconcile_warn", {"ticker": ticker, "held": held})]
+            if _set_once("last_reconcile_sig", f"long:{held}:{now.date()}"):
+                return [("managed_reconcile_warn", {"ticker": ticker, "held": held})]
+            return []
         funds = broker.available_funds()
         need  = decision.price * decision.qty
         if funds is not None and funds < need:
@@ -798,6 +847,13 @@ def format_managed_event(ticker: str, event_type: str, p: dict) -> Optional[str]
             f"⚠️ *Buy skipped — {ticker}*\n"
             f"Wanted to buy, but Zerodha already shows {p['held']} shares held. "
             f"Nothing bought — please check your positions."
+        )
+    if event_type == "managed_short_warn":
+        return (
+            f"🚨 *Account reads SHORT — {ticker}*\n"
+            f"Zerodha shows {p['held']} shares (negative). All buys are on hold.\n"
+            f"If delivery holdings were sold today this usually clears at "
+            f"settlement — otherwise check Kite orders NOW for a double sell."
         )
     if event_type == "managed_insufficient_funds":
         return (

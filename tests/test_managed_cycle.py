@@ -721,3 +721,125 @@ def test_rupee_gap_unchanged_when_pct_unset():
     d = decide(None, {"price": 1385.0, "gap": -20.0, "sma7": 1400.0,
                       "trend_7d": "Choppy"}, _cfg())
     assert d.action == "reenter"
+
+
+# ── 2026-07-09 incident regressions ───────────────────────────────────────────
+# Live incident: a sold-holding day read as net short (see tests/test_broker.py
+# for the held_qty side). These cover the managed-cycle side: the sell path must
+# never market-sell past a stop it could not cancel, and the buy path must page
+# loudly (once) on a short reading instead of warning every cycle.
+
+class _NoCancelBroker(_StopBroker):
+    """Stop cancel always FAILS (e.g. order already COMPLETE at the exchange)."""
+    def cancel(self, oid):
+        self.cancels.append(oid)
+        return False
+
+
+def test_sell_books_stop_fill_instead_of_double_selling(monkeypatch, tmp_path):
+    """Cancel fails because the ratcheted floor stop already filled → book THAT
+    fill as the exit; placing the market sell too would go short (−8)."""
+    monkeypatch.setenv("EMCURE_DB_PATH", str(tmp_path / "emcure.db"))
+    cfg = _cfg(live=True, sl_rupees=30.0)
+    set_position(1800.0, 8, cfg)                       # sl = 1770
+    mc._update_position(stop_order_id="stop1", stop_trigger=1815.0)   # ratcheted to T1
+    broker = _NoCancelBroker(held=8)
+    broker._results["stop1"] = {"status": "COMPLETE", "fill_price": 1815.1, "filled_qty": 8}
+
+    events = mc._execute_sell("EMCURE", mc.Decision("sell", price=1815.0, qty=8),
+                              broker, _NOW, cfg)
+
+    assert broker.sells == []                          # NO second sell went out
+    assert get_position() is None                      # exit booked, position closed
+    ev = next(p for t, p in events if t == "managed_sell")
+    assert ev["exit_price"] == 1815.1
+    assert ev["kind"] == "sell"                        # ratcheted floor = profit exit…
+    assert mc._load().get("stopped_out_today") is not True   # …not a stop-out block
+
+
+def test_sell_books_protective_stop_fill_as_stop_out(monkeypatch, tmp_path):
+    """Same race on the ORIGINAL entry−SL stop → still a real stop-out: kind
+    exit_sl and the same-day re-entry block must engage."""
+    monkeypatch.setenv("EMCURE_DB_PATH", str(tmp_path / "emcure.db"))
+    cfg = _cfg(live=True, sl_rupees=30.0)
+    set_position(1800.0, 8, cfg)                       # sl = 1770
+    mc._update_position(stop_order_id="stop1", stop_trigger=1770.0)
+    broker = _NoCancelBroker(held=8)
+    broker._results["stop1"] = {"status": "COMPLETE", "fill_price": 1769.5, "filled_qty": 8}
+
+    events = mc._execute_sell("EMCURE", mc.Decision("exit_sl", price=1770.0, qty=8),
+                              broker, _NOW, cfg)
+
+    assert broker.sells == []
+    ev = next(p for t, p in events if t == "managed_sell")
+    assert ev["kind"] == "exit_sl"
+    assert mc._load()["stopped_out_today"] is True
+
+
+def test_sell_deferred_when_stop_uncancellable_and_not_dead():
+    """Cancel fails and the stop still shows live at the exchange — hold off
+    (position untouched) rather than risk both orders filling."""
+    cfg = _cfg(live=True, sl_rupees=30.0)
+    set_position(1800.0, 8, cfg)
+    mc._update_position(stop_order_id="stop1", stop_trigger=1770.0)
+    broker = _NoCancelBroker(held=8)
+    broker._states["stop1"] = "TRIGGER PENDING"
+
+    events = mc._execute_sell("EMCURE", mc.Decision("sell", price=1815.0, qty=8),
+                              broker, _NOW, cfg)
+
+    assert broker.sells == []
+    assert get_position() is not None                  # retried next cycle
+    assert [t for t, _ in events] == ["managed_exit_failed"]
+
+
+def test_sell_proceeds_when_uncancellable_stop_is_already_dead(monkeypatch, tmp_path):
+    """Cancel fails but the stop is confirmed CANCELLED/REJECTED → safe to sell."""
+    monkeypatch.setenv("EMCURE_DB_PATH", str(tmp_path / "emcure.db"))
+    cfg = _cfg(live=True, sl_rupees=30.0)
+    set_position(1800.0, 8, cfg)
+    mc._update_position(stop_order_id="stop1", stop_trigger=1770.0)
+    broker = _NoCancelBroker(held=8, sell_fill=1815.0)
+    broker._states["stop1"] = "CANCELLED"
+
+    events = mc._execute_sell("EMCURE", mc.Decision("sell", price=1815.0, qty=8),
+                              broker, _NOW, cfg)
+
+    assert broker.sells == [8]
+    assert any(t == "managed_sell" for t, _ in events)
+
+
+def test_buy_pages_short_warning_once_per_day():
+    """held_qty < 0 → loud managed_short_warn, no order — and deduped so it
+    doesn't re-alert every 5-min cycle (live incident sent the generic warn)."""
+    broker = _StopBroker(held=-8)
+    dec = mc.Decision("reenter", price=1810.0, qty=8)
+
+    events = mc._execute_buy("EMCURE", dec, broker, _cfg(live=True), _NOW)
+    assert broker.buys == []
+    assert [t for t, _ in events] == ["managed_short_warn"]
+    assert events[0][1]["held"] == -8
+
+    assert mc._execute_buy("EMCURE", dec, broker, _cfg(live=True), _NOW) == []  # deduped
+    msg = mc.format_managed_event("EMCURE", "managed_short_warn", events[0][1])
+    assert "SHORT" in msg and "-8" in msg
+
+
+def test_buy_reconcile_warning_dedupes_per_day():
+    broker = _StopBroker(held=8)
+    dec = mc.Decision("reenter", price=1810.0, qty=8)
+
+    events = mc._execute_buy("EMCURE", dec, broker, _cfg(live=True), _NOW)
+    assert broker.buys == []
+    assert [t for t, _ in events] == ["managed_reconcile_warn"]
+    assert mc._execute_buy("EMCURE", dec, broker, _cfg(live=True), _NOW) == []  # deduped
+
+
+def test_step_short_account_blocks_reentry_and_pages():
+    """End-to-end: flat + dip signal + broker reading short → no buy, one page."""
+    broker = _StopBroker(held=-8)
+    market = {"price": 1810.0, "day_high": 1850.0, "day_low": 1805.0,
+              "gap": -25.0, "sma7": 1835.0, "trend_7d": "Choppy"}
+    events = mc.step("EMCURE", market, broker, _cfg(live=True), now=_NOW)
+    assert broker.buys == []
+    assert any(t == "managed_short_warn" for t, _ in events)

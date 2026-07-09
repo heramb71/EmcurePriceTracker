@@ -226,9 +226,16 @@ class KiteBroker:
             # Freshly bought / just-converted shares sit in t1_quantity until they
             # settle into the demat 'quantity' — count both, or a real delivery
             # holding reads as 0 the day it is opened (false RECONCILE MISMATCH).
+            # used_quantity ("quantity sold from the net holding") must ALSO be
+            # counted: selling delivery holdings intraday decrements 'quantity'
+            # AND books a negative CNC position for the same shares, so without
+            # it a routine holdings sale reads as net short (-qty) for the rest
+            # of the day and falsely blocks every re-entry (seen live 2026-07-09).
             for h in self.kite.holdings():
                 if h.get("tradingsymbol") == symbol:
-                    qty += int(h.get("quantity") or 0) + int(h.get("t1_quantity") or 0)
+                    qty += (int(h.get("quantity") or 0)
+                            + int(h.get("t1_quantity") or 0)
+                            + int(h.get("used_quantity") or 0))
             return qty
         except Exception:
             logger.exception("held_qty failed for %s", symbol)
