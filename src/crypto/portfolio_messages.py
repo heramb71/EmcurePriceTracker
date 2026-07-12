@@ -2,9 +2,10 @@
 Portfolio-aware message formatters (crypto_portfolio.json).
 
 Split out of messages.py to keep both files inside the 400-line cap:
-  format_portfolio_block     — holdings P&L + buy/sell targets (in briefings)
-  format_book_profit_alert   — held coin entered the book-profit band
-  format_dip_buy_alert       — held coin dipped into the SMA7 accumulation zone
+  format_portfolio_block       — holdings P&L + buy/sell targets (in briefings)
+  format_book_profit_alert     — held coin entered the book-profit band
+  format_dip_buy_alert         — held coin dipped into the SMA7 accumulation zone
+  format_signal_position_note  — position-aware action lines for signal alerts
 
 See src/crypto/portfolio.py for the underlying math.
 """
@@ -15,6 +16,7 @@ from typing import Optional
 
 from src.crypto.portfolio import (
     STABLECOINS,
+    dip_level,
     dip_zone_inr,
     sell_targets_inr,
     tranche_inr,
@@ -167,5 +169,65 @@ def format_dip_buy_alert(
     else:
         lines += ["", "👉 Accumulation zone for a long-term position."]
     lines += ["", "⚠️ Deploy in tranches — never the whole budget on one dip."]
+
+    return "\n".join(lines)
+
+
+def format_signal_position_note(
+    sym: str,
+    quote: dict,
+    sig: dict,
+    stats: dict,
+    plan: dict,
+) -> str:
+    """Position-aware action lines for a signal alert on a HELD coin.
+
+    Replaces the generic "consider exiting" / "good buying opportunity" advice
+    with what the alert actually means for this position: a bearish reading on
+    a coin below the book band is a don't-add signal, not a sell — exiting
+    there nets ≈ nothing after fees & the no-set-off VDA tax.
+    """
+    gsign = "+" if stats["pnl_pct"] >= 0 else ""
+    lines = [
+        f"Your position: {stats['qty']:g} {sym} @ ₹{stats['avg_cost_inr']:,.0f} avg"
+        f"  ({gsign}{stats['pnl_pct']:.1f}%)",
+    ]
+
+    bearish = sig["signal"] in ("Sell", "Strong Sell") or sig["rsi"] > 68
+    bullish = sig["signal"] in ("Strong Buy", "Buy") or sig["rsi"] < 35
+    band_lo, _ = sell_targets_inr({"qty": stats["qty"],
+                                   "invested_inr": stats["invested_inr"]}, plan)
+    zone = dip_zone_inr(sig, quote.get("usd_inr", 0.0), plan)
+
+    if bearish:
+        if stats["pnl_pct"] >= plan["book_profit_min_pct"]:
+            lines += [
+                f"You're in your book-profit zone — selling nets "
+                f"₹{stats['net_pnl_inr']:+,.0f} after fees & tax.",
+                "👉 Consider booking part — keeps the long-term position.",
+            ]
+        else:
+            lines += [
+                f"Selling here nets ₹{stats['net_pnl_inr']:+,.0f}"
+                f" ({stats['net_pnl_pct']:+.1f}%) after fees & tax"
+                f" — below your +{plan['book_profit_min_pct']:.0f}%"
+                f" book zone ({_inr(band_lo)}).",
+                "👉 Not a sell for you — treat it as \"don't add here\"."
+                + (f" Dip-buy zone: {_inr(zone[0])}." if zone else ""),
+            ]
+    elif bullish:
+        if dip_level(sig, plan):
+            tranche = tranche_inr(plan)
+            note = "👉 Your dip-buy zone is active"
+            note += f" — consider one tranche (~₹{tranche:,.0f})." if tranche > 0 else "."
+            lines.append(note)
+        else:
+            lines.append(
+                "👉 Price hasn't reached your dip-buy zone"
+                + (f" ({_inr(zone[0])})" if zone else "")
+                + " — wait for it, don't chase."
+            )
+    else:
+        lines.append("👉 No action needed for your position.")
 
     return "\n".join(lines)

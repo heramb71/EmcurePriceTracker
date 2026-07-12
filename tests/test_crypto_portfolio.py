@@ -7,11 +7,12 @@ import pytest
 
 from src.crypto import portfolio as pf
 from src.crypto.costs import DEFAULT_FEE_PER_SIDE, VDA_TAX_RATE
-from src.crypto.messages import format_morning_briefing
+from src.crypto.messages import format_morning_briefing, format_signal_alert
 from src.crypto.portfolio_messages import (
     format_book_profit_alert,
     format_dip_buy_alert,
     format_portfolio_block,
+    format_signal_position_note,
 )
 
 ETH = {"qty": 0.1816, "invested_inr": 31080.0}
@@ -229,3 +230,64 @@ def test_dip_buy_alert_mentions_tranche():
     assert "tranche" in msg
     assert "₹8,333" in msg
     assert "lowers" in msg  # price below avg cost
+
+
+# ── position-aware signal alerts ─────────────────────────────────────────────
+# A bearish signal alert on a coin held below the book band must NOT tell the
+# holder to exit — selling there nets ≈ nothing after fees & tax.
+
+_SELL_SIG = {**_SIG, "rsi": 76.0, "signal": "Sell", "sma7_gap_pct": 1.1}
+_ETH_QUOTE = {"price_inr": 172_226.0, "price_usd": 1806.0,
+              "change_pct": 1.1, "usd_inr": 95.37}
+
+
+def test_position_note_bearish_below_band_says_dont_add():
+    stats = pf.holding_stats("ETH", ETH, _ETH_QUOTE["price_inr"])   # ≈ +0.7% gross
+    plan = {**pf.DEFAULT_PLAN, "budget_inr": 50000, "budget_months": 6}
+    note = format_signal_position_note("ETH", _ETH_QUOTE, _SELL_SIG, stats, plan)
+    assert "Your position" in note
+    assert "book zone" in note
+    assert "don't add" in note.lower()
+    assert "after fees & tax" in note
+    assert "exiting" not in note.lower()        # the generic advice must be gone
+
+
+def test_position_note_bearish_in_band_points_to_booking():
+    stats = pf.holding_stats("ETH", ETH, 215_000.0)   # ≈ +25.6% gross, inside band
+    note = format_signal_position_note(
+        "ETH", {**_ETH_QUOTE, "price_inr": 215_000.0}, _SELL_SIG, stats, pf.DEFAULT_PLAN)
+    assert "book" in note.lower()
+    assert "part" in note.lower()               # partial booking, not full exit
+
+
+def test_position_note_bullish_above_dip_zone_urges_patience():
+    buy_sig = {**_SIG, "rsi": 33.0, "signal": "Buy", "sma7_gap_pct": -3.0}
+    stats = pf.holding_stats("ETH", ETH, _ETH_QUOTE["price_inr"])
+    plan = {**pf.DEFAULT_PLAN, "budget_inr": 50000, "budget_months": 6}
+    note = format_signal_position_note("ETH", _ETH_QUOTE, buy_sig, stats, plan)
+    assert "dip-buy zone" in note.lower()
+    assert "chase" in note.lower() or "wait" in note.lower()
+
+
+def test_position_note_bullish_in_dip_zone_mentions_tranche():
+    buy_sig = {**_SIG, "rsi": 33.0, "signal": "Buy", "sma7_gap_pct": -6.0}
+    stats = pf.holding_stats("ETH", ETH, 160_000.0)
+    plan = {**pf.DEFAULT_PLAN, "budget_inr": 50000, "budget_months": 6}
+    note = format_signal_position_note(
+        "ETH", {**_ETH_QUOTE, "price_inr": 160_000.0}, buy_sig, stats, plan)
+    assert "tranche" in note.lower()
+
+
+def test_signal_alert_uses_position_note_instead_of_generic_action():
+    stats = pf.holding_stats("ETH", ETH, _ETH_QUOTE["price_inr"])
+    note = format_signal_position_note(
+        "ETH", _ETH_QUOTE, _SELL_SIG, stats, pf.DEFAULT_PLAN)
+    msg = format_signal_alert("Ethereum", "ETH", _ETH_QUOTE, _SELL_SIG,
+                              position_note=note)
+    assert "Your position" in msg
+    assert "reducing or exiting" not in msg
+
+
+def test_signal_alert_without_note_keeps_generic_action():
+    msg = format_signal_alert("Ethereum", "ETH", _ETH_QUOTE, _SELL_SIG)
+    assert "reducing or exiting" in msg

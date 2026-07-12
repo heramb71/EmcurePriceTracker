@@ -209,8 +209,14 @@ def format_signal_alert(
     quote: dict,
     sig: dict,
     now: Optional[datetime] = None,
+    position_note: Optional[str] = None,
 ) -> str:
-    """Intraday alert when RSI crosses a threshold or signal becomes Strong Buy/Sell."""
+    """Intraday alert when RSI crosses a threshold or signal becomes Strong Buy/Sell.
+
+    ``position_note`` (from portfolio_messages.format_signal_position_note)
+    replaces the generic action line when the alerted coin is actually held —
+    generic "consider exiting" advice is wrong for a position below the book
+    band, where selling nets ≈ nothing after fees & tax."""
     if now is None:
         now = datetime.now()
 
@@ -253,6 +259,6 @@ def format_signal_alert(
     if rsi_note:
         lines += ["", rsi_note]
 
-    lines += ["", f"👉 {action}"]
+    lines += ["", position_note if position_note else f"👉 {action}"]
 
     return "\n".join(lines)

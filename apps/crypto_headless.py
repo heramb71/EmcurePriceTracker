@@ -52,6 +52,7 @@ from src.crypto.portfolio_messages import (
     format_book_profit_alert,
     format_dip_buy_alert,
     format_portfolio_block,
+    format_signal_position_note,
 )
 from src.crypto.signals import compute_crypto_signal, is_alert_worthy
 from src.notify import channels
@@ -265,7 +266,16 @@ def main() -> None:
                     )
 
                     if cooldown_ok and is_alert_worthy(sig):
-                        msg = format_signal_alert(name, sym, quote, sig, now)
+                        # Held coin → position-aware action lines instead of
+                        # the generic "consider exiting" trader advice.
+                        note = None
+                        holding = port["holdings"].get(sym) if port else None
+                        if holding:
+                            stats = pf.holding_stats(sym, holding, quote["price_inr"])
+                            note = format_signal_position_note(
+                                sym, quote, sig, stats, port["plan"])
+                        msg = format_signal_alert(name, sym, quote, sig, now,
+                                                  position_note=note)
                         _wa(msg)
                         outcomes.record_alert(outcomes_conn, sym, sig, quote, now)
                         last_alerted[alert_key] = now
