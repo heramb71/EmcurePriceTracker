@@ -24,8 +24,10 @@ _RETRY_BACKOFF_S = 2
 
 # yfinance crypto symbol → CoinGecko coin id, for the fallback source.
 _COINGECKO_IDS = {
-    "BTC-USD": "bitcoin",
-    "ETH-USD": "ethereum",
+    "BTC-USD":  "bitcoin",
+    "ETH-USD":  "ethereum",
+    "DOGE-USD": "dogecoin",
+    "TUSD-USD": "true-usd",
 }
 _COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 

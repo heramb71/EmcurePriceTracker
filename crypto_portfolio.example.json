@@ -1,0 +1,15 @@
+{
+  "_comment": "Copy to crypto_portfolio.json (gitignored) and fill in real holdings. qty = coins held, invested_inr = total rupees put in (avg cost = invested_inr/qty). plan.budget_inr/budget_months size the dip-buy tranches; book_profit_*_pct set the sell band; dip gaps are % below the 7-day SMA.",
+  "holdings": {
+    "BTC": {"qty": 0.001, "invested_inr": 10000},
+    "ETH": {"qty": 0.05,  "invested_inr": 10000}
+  },
+  "plan": {
+    "budget_inr": 0,
+    "budget_months": 6,
+    "book_profit_min_pct": 20,
+    "book_profit_strong_pct": 30,
+    "dip_gap_pct": 5.0,
+    "strong_dip_gap_pct": 7.0
+  }
+}

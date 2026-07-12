@@ -1,10 +1,13 @@
 """
 WhatsApp message formatters for the crypto trend tracker.
 
-Three message types:
-  format_morning_briefing  — 8 AM combined BTC + ETH snapshot
-  format_evening_summary   — 8 PM full technical read
-  format_signal_alert      — intraday RSI / signal trigger
+Message types:
+  format_morning_briefing    — 8 AM combined BTC + ETH snapshot
+  format_evening_summary     — 8 PM full technical read
+  format_signal_alert        — intraday RSI / signal trigger
+
+Portfolio-aware formatters (holdings P&L, book-profit and dip-buy alerts)
+live in src/crypto/portfolio_messages.py.
 """
 from __future__ import annotations
 
@@ -101,6 +104,7 @@ def format_morning_briefing(
     eth_quote: dict,
     eth_sig: dict,
     now: Optional[datetime] = None,
+    portfolio_block: Optional[str] = None,
 ) -> str:
     """8:00 AM combined BTC + ETH morning snapshot."""
     if now is None:
@@ -131,6 +135,10 @@ def format_morning_briefing(
         "",
         f"── *Overall Outlook* ──",
         outlook,
+    ]
+    if portfolio_block:
+        lines += ["", portfolio_block]
+    lines += [
         "",
         "⏰ Next update: 8:00 PM tonight",
     ]
@@ -144,6 +152,7 @@ def format_evening_summary(
     eth_quote: dict,
     eth_sig: dict,
     now: Optional[datetime] = None,
+    portfolio_block: Optional[str] = None,
 ) -> str:
     """8:00 PM full technical evening summary."""
     if now is None:
@@ -188,6 +197,8 @@ def format_evening_summary(
             "",
         ]
 
+    if portfolio_block:
+        lines += [portfolio_block, ""]
     lines += ["⏰ Next update: tomorrow 8:00 AM"]
     return "\n".join(lines)
 

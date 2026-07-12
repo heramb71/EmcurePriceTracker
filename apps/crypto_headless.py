@@ -41,11 +41,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from src.crypto import outcomes
+from src.crypto import portfolio as pf
 from src.crypto.data import fetch_crypto_daily, fetch_crypto_quote, fetch_usd_inr
 from src.crypto.messages import (
     format_evening_summary,
     format_morning_briefing,
     format_signal_alert,
+)
+from src.crypto.portfolio_messages import (
+    format_book_profit_alert,
+    format_dip_buy_alert,
+    format_portfolio_block,
 )
 from src.crypto.signals import compute_crypto_signal, is_alert_worthy
 from src.notify import channels
@@ -90,6 +96,62 @@ def _retry_send(send_fn, *args) -> bool:
 
 def _in_window(now: datetime, hour: int) -> bool:
     return now.hour == hour and now.minute <= _WINDOW_MINUTES
+
+
+def _portfolio_block(
+    port: dict | None,
+    btc_quote: dict, btc_sig: dict,
+    eth_quote: dict, eth_sig: dict,
+    usd_inr: float,
+) -> str | None:
+    """Build the briefing portfolio section, fetching quotes for any extra
+    held coins (DOGE, TUSD, …). Called only inside briefing windows so the
+    extra fetches happen twice a day, not every cycle."""
+    if not port:
+        return None
+    prices = {"BTC": btc_quote["price_inr"], "ETH": eth_quote["price_inr"]}
+    for sym in port["holdings"]:
+        yf_sym = pf.YF_SYMBOLS.get(sym)
+        if sym not in prices and yf_sym:
+            q = fetch_crypto_quote(yf_sym, usd_inr)
+            if q:
+                prices[sym] = q["price_inr"]
+    summary = pf.portfolio_summary(port, prices)
+    if summary is None:
+        return None
+    return format_portfolio_block(port, summary, {"BTC": btc_sig, "ETH": eth_sig}, usd_inr)
+
+
+def _check_portfolio_alerts(
+    port: dict | None,
+    assets: list[tuple[str, str, dict, dict]],
+    now: datetime,
+    last_alerted: dict,
+    send,
+) -> None:
+    """Position-relative intraday alerts: book-profit band + SMA7 dip zone.
+    Each fires at most once per symbol per day."""
+    if not port:
+        return
+    plan = port["plan"]
+    for name, sym, quote, sig in assets:
+        holding = port["holdings"].get(sym)
+        stats = pf.holding_stats(sym, holding, quote["price_inr"]) if holding else None
+
+        if stats:
+            level = pf.should_book_profit(stats, sig, plan)
+            key = f"book_{sym}_{now.date()}"
+            if level and key not in last_alerted:
+                send(format_book_profit_alert(name, sym, quote, stats, sig, plan, level, now))
+                last_alerted[key] = now
+                logger.info("Book-profit alert: %s %s (%+.1f%%)", sym, level, stats["pnl_pct"])
+
+        dip = pf.dip_level(sig, plan)
+        key = f"dip_{sym}_{now.date()}"
+        if dip and key not in last_alerted:
+            send(format_dip_buy_alert(name, sym, quote, sig, stats, plan, dip, now))
+            last_alerted[key] = now
+            logger.info("Dip-buy alert: %s %s (gap %+.1f%%)", sym, dip, sig["sma7_gap_pct"])
 
 
 def _fetch_asset(yf_symbol: str, usd_inr: float) -> tuple[dict | None, dict | None]:
@@ -150,6 +212,11 @@ def main() -> None:
         if btc_quote and btc_sig and eth_quote and eth_sig:
             _log_state(btc_quote, btc_sig, eth_quote, eth_sig)
 
+            # Holdings file is re-read each cycle so edits (new tranches,
+            # changed plan) take effect without a restart. None → no portfolio
+            # features, tracker behaves exactly as before.
+            port = pf.load_portfolio()
+
             # Book matured forward outcomes for previously recorded alerts.
             written = outcomes.evaluate_due(
                 outcomes_conn,
@@ -163,7 +230,8 @@ def main() -> None:
             if _in_window(now, _MORNING_HOUR):
                 key = f"morning_{now.date()}"
                 if key not in last_alerted:
-                    msg = format_morning_briefing(btc_quote, btc_sig, eth_quote, eth_sig, now)
+                    pblock = _portfolio_block(port, btc_quote, btc_sig, eth_quote, eth_sig, usd_inr)
+                    msg = format_morning_briefing(btc_quote, btc_sig, eth_quote, eth_sig, now, pblock)
                     _wa(msg)
                     last_alerted[key] = now
                     logger.info("Morning briefing sent")
@@ -172,7 +240,8 @@ def main() -> None:
             if _in_window(now, _EVENING_HOUR):
                 key = f"evening_{now.date()}"
                 if key not in last_alerted:
-                    msg = format_evening_summary(btc_quote, btc_sig, eth_quote, eth_sig, now)
+                    pblock = _portfolio_block(port, btc_quote, btc_sig, eth_quote, eth_sig, usd_inr)
+                    msg = format_evening_summary(btc_quote, btc_sig, eth_quote, eth_sig, now, pblock)
                     _wa(msg)
                     last_alerted[key] = now
                     logger.info("Evening summary sent")
@@ -204,6 +273,14 @@ def main() -> None:
                             "Signal alert: %s | %s | RSI %.0f | score %.2f",
                             sym, sig["signal"], sig["rsi"], sig["score"],
                         )
+
+                # Position-relative alerts (book-profit / dip-buy tranche).
+                _check_portfolio_alerts(
+                    port,
+                    [("Bitcoin", "BTC", btc_quote, btc_sig),
+                     ("Ethereum", "ETH", eth_quote, eth_sig)],
+                    now, last_alerted, _wa,
+                )
         else:
             logger.warning("Data fetch failed for one or both assets — will retry")
 

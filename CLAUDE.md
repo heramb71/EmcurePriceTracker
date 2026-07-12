@@ -388,6 +388,26 @@ any future crypto execution:
   `python -m apps.crypto_outcomes` prints expectancy by symbol × alert-type ×
   horizon. Judge combos only at n≥20, same discipline as the radar.
 
+**Portfolio-aware targets** — `crypto_portfolio.json` (gitignored — personal
+holdings; copy `crypto_portfolio.example.json`, path override
+`CRYPTO_PORTFOLIO_PATH`) makes the alerts position-relative. Math in
+`src/crypto/portfolio.py` (pure), formatting in `src/crypto/portfolio_messages.py`,
+wired in `crypto_headless` (file re-read each cycle — edits need no restart;
+missing file → tracker behaves exactly as before):
+- **Briefings** (8 AM/8 PM) append a portfolio block: per-coin + total P&L
+  (any held coin with a `YF_SYMBOLS` mapping — BTC/ETH/DOGE/TUSD), an
+  "if sold today" NET line (fees + 31.2% VDA tax, per-coin, no loss set-off),
+  book-profit target prices (avg cost +20%→+30%, skipped for stablecoins),
+  and SMA7 dip-buy zone prices for BTC/ETH.
+- **Book-profit alert** (💰, once/day/symbol): fires unconditionally above
+  +30%, and inside the 20–30% band only when there is scope for a dip
+  (RSI ≥ 65 or a Sell signal). Always shows the net-after-tax number and
+  suggests partial booking (long-term position stays on).
+- **Dip-buy alert** (🛒, once/day/symbol): price ≥5% below the 7-day SMA
+  (strong at ≥7% — the lab-validated ETH threshold) → suggests deploying one
+  tranche (`plan.budget_inr / budget_months`) of the deployment plan.
+- Still **alert-only — never trades**; the reversion-gate FAIL stands.
+
 ---
 
 ## KittyBot — intraday single-stock trader (`src/kittybot/`, `apps/kittybot_headless.py`)

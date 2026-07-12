@@ -135,6 +135,11 @@ def compute_crypto_signal(df_daily: pd.DataFrame, quote: dict) -> dict:
     week_ago = float(df_daily["close"].iloc[-8]) if len(df_daily) >= 8 else float(close.iloc[0])
     change_7d_pct = round((price - week_ago) / week_ago * 100, 2) if week_ago > 0 else 0.0
 
+    # 7-day SMA + live gap — the reversion-lab trigger, exposed for the
+    # portfolio dip-buy zones (negative gap = price below the weekly mean).
+    sma7 = float(close.tail(7).mean())
+    sma7_gap_pct = round((price - sma7) / sma7 * 100, 2) if sma7 > 0 else 0.0
+
     today_vol = int(df_daily["volume"].iloc[-1])
     vol_ratio = round(today_vol / avg_vol, 2) if avg_vol > 0 else 1.0
 
@@ -202,6 +207,8 @@ def compute_crypto_signal(df_daily: pd.DataFrame, quote: dict) -> dict:
         "ema200":       ema200,
         "atr":          atr,
         "atr_pct":      round(atr / price * 100, 2) if price > 0 else 0.0,
+        "sma7":         sma7,
+        "sma7_gap_pct": sma7_gap_pct,
         "change_7d_pct": change_7d_pct,
         "vol_ratio":    vol_ratio,
         "sub_scores": {
