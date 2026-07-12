@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from src.emcure.alert_log import AlertLog
+from src.shared.alert_log import AlertLog
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 _NOW = datetime(2026, 7, 3, 9, 5, tzinfo=_IST)
@@ -47,3 +47,26 @@ def test_tolerates_missing_and_corrupt_files(tmp_path):
     bad.write_text('{"key": 42, "ok": "' + _NOW.isoformat() + '"}')
     log = _log(tmp_path)
     assert list(log) == ["ok"]                            # bad values skipped
+
+
+# ── max_age retention (crypto: date-less cooldown keys span midnight) ────────
+
+def _aged_log(tmp_path, now) -> AlertLog:
+    return AlertLog(now=now, path=str(tmp_path / "alerts.json"),
+                    max_age=timedelta(hours=24))
+
+
+def test_max_age_keeps_cooldown_entry_across_midnight(tmp_path):
+    late = datetime(2026, 7, 3, 23, 30, tzinfo=_IST)
+    log = _aged_log(tmp_path, late)
+    log["signal_ETH"] = late          # 4h cooldown started 23:30
+    log2 = _aged_log(tmp_path, late + timedelta(hours=1))   # restart at 00:30
+    assert "signal_ETH" in log2       # day-based pruning would have dropped it
+
+
+def test_max_age_prunes_entries_older_than_window(tmp_path):
+    late = datetime(2026, 7, 3, 23, 30, tzinfo=_IST)
+    log = _aged_log(tmp_path, late)
+    log["signal_ETH"] = late
+    log2 = _aged_log(tmp_path, late + timedelta(hours=25))
+    assert len(log2) == 0

@@ -57,6 +57,7 @@ from src.crypto.portfolio_messages import (
 from src.crypto.signals import compute_crypto_signal, is_alert_worthy
 from src.notify import channels
 from src.notify.alerts import send_alert, send_whatsapp_alert
+from src.shared.alert_log import AlertLog
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,6 +80,11 @@ _WINDOW_MINUTES = 14          # briefing window: HH:00 – HH:14
 _SIGNAL_COOLDOWN_H = 4        # hours between intraday alerts per asset
 _REFRESH_SECONDS = int(os.getenv("CRYPTO_REFRESH_SECONDS", "600"))
 _SEND_RETRY_DELAY_S = 2
+# Persistent dedupe (survives restarts/deploys). Retention is age-based, not
+# per-day, because the signal_{sym} cooldown keys carry no date and the 4h
+# cooldown can span midnight.
+_ALERTS_FILE = os.path.join(os.path.dirname(__file__), "..", "crypto_alerts_sent.json")
+_ALERTS_MAX_AGE = timedelta(hours=24)
 
 
 def _now_ist() -> datetime:
@@ -189,7 +195,13 @@ def main() -> None:
         if tg_ready and not _retry_send(send_alert, tg_token, tg_chat_id, msg):
             logger.error("Telegram alert dropped after retry (%d chars)", len(msg))
 
-    last_alerted: dict = {}
+    # Write-through persisted: a mid-day restart/deploy can no longer re-send
+    # briefings, reset the 4h signal cooldown, or duplicate crypto.db rows.
+    last_alerted: dict = AlertLog(
+        now=_now_ist(),
+        path=os.getenv("CRYPTO_ALERTS_SENT_FILE") or _ALERTS_FILE,
+        max_age=_ALERTS_MAX_AGE,
+    )
     # Forward-outcome tracking (crypto.db): every fired alert is recorded and
     # scored at 1d/3d/7d so the alerts build an evidence base — the gate any
     # future crypto trading must pass. Read the report:

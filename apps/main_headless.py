@@ -45,7 +45,6 @@ def _warn_if_env_world_readable() -> None:
 
 from apps.main import _refresh
 from src.emcure import ledger, schedule
-from src.emcure.alert_log import AlertLog
 from src.emcure.predictor import (
     format_eod_summary,
     format_post_open_briefing,
@@ -66,6 +65,7 @@ from src.notify.alerts import (
     send_whatsapp_alert,
 )
 from src.shared import heartbeat
+from src.shared.alert_log import AlertLog
 from src.shared.holidays import format_holiday_alert, is_market_holiday
 
 logging.basicConfig(

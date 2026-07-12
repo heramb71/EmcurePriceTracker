@@ -252,9 +252,13 @@ python -m apps.watchdog
   market-open predicate (`schedule.is_market_open`, weekday + holiday + 9:15–15:30) live only in
   `src/emcure/schedule.py` (pure predicates), consumed by `main.py`, `main_headless.py`,
   `watchdog.py`, and the `/dashboard`.
-- **Persistent alert dedupe** — `src/emcure/alert_log.py` (`alerts_sent.json`, gitignored)
-  write-through persists the tracker's `last_alerted` map and prunes previous days on load, so a
-  mid-day restart/deploy can't re-send the pre-open briefing or the day's BUY signal. The EOD
+- **Persistent alert dedupe** — `src/shared/alert_log.py` write-through persists each service's
+  `last_alerted` map and prunes stale entries on load, so a mid-day restart/deploy can't re-send
+  briefings or the day's signals. Two retention policies: the EMCURE tracker (`alerts_sent.json`)
+  prunes previous days (all its keys are date-scoped); the crypto tracker
+  (`crypto_alerts_sent.json`, `max_age=24h`) prunes by age because its `signal_{sym}` 4h-cooldown
+  keys carry no date and must survive a restart across midnight — a reset cooldown also used to
+  duplicate rows in `crypto.db`, polluting the outcome evidence. Both files gitignored. The EOD
   summary's Day P&L / trades-today come from `ledger.day_stats` (live trades only).
 - **Remote managed-cycle control** — `EXIT` queues a sell (flag in `managed_state.json`,
   consumed by the tracker's next step), `HALT`/`RESUME` gate re-entries via `reentry_blocked`.
