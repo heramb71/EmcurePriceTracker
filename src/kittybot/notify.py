@@ -33,6 +33,13 @@ def _foot(live: bool) -> str:
 
 # ── pure formatters ───────────────────────────────────────────────────────────
 
+def _pct_with_rupees(pct: float, prev_close: Optional[float]) -> str:
+    """``2.4% ≈ ₹34`` — the rupee move off yesterday's close, when known."""
+    if not prev_close:
+        return f"{pct:.1f}%"
+    return f"{pct:.1f}% ≈ ₹{prev_close * pct / 100:,.0f}"
+
+
 def format_daily_plan(survivors: list[Pick], source: str, live: bool) -> str:
     """Pre-open briefing: today's kitty after earnings/gap discards."""
     if not survivors:
@@ -41,12 +48,21 @@ def format_daily_plan(survivors: list[Pick], source: str, live: bool) -> str:
                           "", _foot(live)])
     lines = [f"🐾 *KittyBot — today's watch ({len(survivors)})*",
              f"_source: {source}_", ""]
+    any_both, any_long_only = False, False
     for p in survivors:
-        room = "LONG-bias" if p.long_room_2pct >= p.short_room_2pct else "SHORT-ok"
-        lines.append(
-            f"• *{p.symbol}*  tgt {p.suggested_target_pct:.1f}% / "
-            f"sl {p.suggested_stop_pct:.1f}%  ({room})"
-        )
+        # Mirrors the engine's gate: shorts allowed only when short room ≥ long room.
+        both_ways = p.short_room_2pct >= p.long_room_2pct
+        side = "↕️ long or short" if both_ways else "⬆️ long only"
+        any_both, any_long_only = any_both or both_ways, any_long_only or not both_ways
+        px = f"  ₹{p.prev_close:,.0f}" if p.prev_close else ""
+        lines.append(f"• *{p.symbol}*{px}")
+        lines.append(f"   tgt {_pct_with_rupees(p.suggested_target_pct, p.prev_close)} · "
+                     f"sl {_pct_with_rupees(p.suggested_stop_pct, p.prev_close)} · {side}")
+    lines.append("")
+    if any_long_only:
+        lines.append("⬆️ long only — moves up more easily; buys a break *above* the opening range")
+    if any_both:
+        lines.append("↕️ long or short — falls as easily as it rises; a break *below* the range may be shorted")
     lines += ["", "Waiting for the 15-min opening-range break — one trade only.", "",
               _foot(live)]
     return "\n".join(lines)

@@ -20,8 +20,32 @@ def test_daily_plan_lists_survivors():
     picks = [make_pick("TATAMOTORS"), make_pick("VEDL", long_room_2pct=1.0, short_room_2pct=3.0)]
     msg = notify.format_daily_plan(picks, source="json", live=False)
     assert "TATAMOTORS" in msg and "VEDL" in msg
-    assert "SHORT-ok" in msg  # VEDL has more short room
+    assert "long or short" in msg  # VEDL has more short room
+    assert "long only" in msg      # TATAMOTORS is long-biased
     assert "paper" in msg
+
+
+def test_daily_plan_shows_rupee_values():
+    # prev_close=1000, tgt 3.0% → ₹30, sl 1.5% → ₹15
+    msg = notify.format_daily_plan([make_pick("TATAMOTORS")], source="json", live=False)
+    assert "₹1,000" in msg           # yesterday's close shown per pick
+    assert "3.0% ≈ ₹30" in msg
+    assert "1.5% ≈ ₹15" in msg
+
+
+def test_daily_plan_degrades_without_prev_close():
+    msg = notify.format_daily_plan([make_pick("VEDL", prev_close=None)],
+                                   source="fallback", live=False)
+    assert "VEDL" in msg
+    assert "3.0%" in msg and "≈" not in msg  # pct only, no rupee guess
+
+
+def test_daily_plan_tie_allows_short():
+    # Engine allows a short when short_room >= long_room — the label must agree on a tie.
+    msg = notify.format_daily_plan(
+        [make_pick("VEDL", long_room_2pct=2.0, short_room_2pct=2.0)],
+        source="json", live=False)
+    assert "long or short" in msg
 
 
 def test_daily_plan_empty():
