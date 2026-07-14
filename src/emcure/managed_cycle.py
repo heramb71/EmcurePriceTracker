@@ -457,7 +457,7 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
                 }))
                 logger.warning("Managed-cycle adopted holding: %d @ ₹%.2f", held, avg)
                 if cfg.live:
-                    _ensure_protective_stop(ticker, broker, cfg)   # resting exchange stop
+                    _ensure_protective_stop(ticker, broker, cfg, now)   # resting exchange stop
 
     # Decision price: prefer the broker's real-time last-traded price over the
     # yfinance quote (NSE lags up to ~15 min there), so stop / target / re-entry
@@ -515,7 +515,7 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
     if decision.action == "hold":
         if cfg.live and broker is not None:
             # Keep the stop resting while we hold — ratcheted to any touched floor.
-            _ensure_protective_stop(ticker, broker, cfg)
+            _ensure_protective_stop(ticker, broker, cfg, now)
         return events
     if decision.action == "wait":
         return events
@@ -551,6 +551,31 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
     if decision.action == "reenter":
         return events + _execute_buy(ticker, decision, broker, cfg, now)
     return events
+
+
+def _stop_is_stale(position: dict, now: datetime) -> bool:
+    """True when the recorded resting stop was placed on a PREVIOUS day.
+
+    Kite regular (day-validity) orders lapse at that day's close, and the id
+    disappears from the next session's order book — cancel raises and
+    order_history returns nothing (state=None). The uncancellable-stop guard
+    can never resolve that, so an overnight hold deadlocked every exit
+    (live incident 2026-07-14). A previous-day stop is definitively dead:
+    skip the cancel handshake and treat it as needing a fresh stop.
+
+    Placement day comes from stop_placed_on (recorded at placement), falling
+    back to the Kite order id's YYMMDD prefix for state written before that
+    field existed. Unparseable ids (unit-test stubs) are never stale."""
+    if not position.get("stop_order_id"):
+        return False
+    placed = position.get("stop_placed_on")
+    if not placed:
+        oid = str(position["stop_order_id"])
+        try:
+            placed = datetime.strptime(oid[:6], "%y%m%d").date().isoformat()
+        except ValueError:
+            return False
+    return str(placed) < now.date().isoformat()
 
 
 def _stop_was_protective(position: dict) -> bool:
@@ -608,19 +633,23 @@ def _touched_floor(position: dict, cfg: ManagedConfig) -> Optional[float]:
     return max(touched) if touched else None
 
 
-def _ensure_protective_stop(ticker: str, broker, cfg: Optional[ManagedConfig] = None) -> Optional[str]:
+def _ensure_protective_stop(ticker: str, broker, cfg: Optional[ManagedConfig] = None,
+                            now: Optional[datetime] = None) -> Optional[str]:
     """Guarantee a resting exchange stop exists for the open position — and
     RATCHET it up to the touched-target floor.
 
-    Place a stop if missing, re-place if the recorded order was cancelled or
-    rejected, and cancel/re-place at a higher trigger once a target rung has
-    been touched. Without the ratchet the "never give a touched rung back"
-    floor was enforced only by the 5-min polling loop: a flash drop between
-    cycles (or with the bot offline) fell through to the original entry−SL
-    stop, giving back the whole floor. The trigger only ever moves UP."""
+    Place a stop if missing, re-place if the recorded order was cancelled,
+    rejected, or lapsed at a previous day's close (day-validity orders die
+    overnight — trusting the stale id left an overnight position unprotected,
+    live 2026-07-14), and cancel/re-place at a higher trigger once a target
+    rung has been touched. Without the ratchet the "never give a touched rung
+    back" floor was enforced only by the 5-min polling loop: a flash drop
+    between cycles (or with the bot offline) fell through to the original
+    entry−SL stop, giving back the whole floor. The trigger only ever moves UP."""
     position = get_position()
     if not position or broker is None:
         return None
+    now = now or _now_ist()
 
     desired = float(position["sl"])
     if cfg is not None:
@@ -630,6 +659,9 @@ def _ensure_protective_stop(ticker: str, broker, cfg: Optional[ManagedConfig] = 
 
     stop_id = position.get("stop_order_id")
     current = float(position.get("stop_trigger") or position["sl"])
+    if stop_id and _stop_is_stale(position, now):
+        logger.warning("Resting stop %s lapsed at a previous close — re-placing", stop_id)
+        stop_id = None                # dead at the exchange — don't cancel/query it
     if stop_id:
         status = broker.order_state(stop_id)
         if status in ("CANCELLED", "REJECTED"):
@@ -642,7 +674,8 @@ def _ensure_protective_stop(ticker: str, broker, cfg: Optional[ManagedConfig] = 
             return stop_id            # resting at the right level — leave it
 
     new_id = broker.place_stop_loss(ticker, int(position["qty"]), desired)
-    _update_position(stop_order_id=new_id, stop_trigger=desired)
+    _update_position(stop_order_id=new_id, stop_trigger=desired,
+                     stop_placed_on=now.date().isoformat())
     return new_id
 
 
@@ -657,7 +690,12 @@ def _execute_sell(ticker: str, decision: Decision, broker, now: datetime,
     # in parallel. The ratchet makes this race likely, not exotic — the lifted
     # trigger IS the floor decide() sells at on a pullback.
     stop_id = pos.get("stop_order_id")
-    if stop_id and broker is not None and not broker.cancel(stop_id):
+    if stop_id and broker is not None and _stop_is_stale(pos, now):
+        # A previous-day stop lapsed at that close — it cannot fill or be
+        # cancelled today, and querying it only yields state=None, which
+        # deadlocked the guard below every cycle (live 2026-07-14). Sell.
+        logger.warning("Resting stop %s lapsed at a previous close — selling without cancel", stop_id)
+    elif stop_id and broker is not None and not broker.cancel(stop_id):
         res = broker.order_result(stop_id)
         status = res.get("status")
         if status == "COMPLETE" and res.get("filled_qty"):
@@ -670,10 +708,15 @@ def _execute_sell(ticker: str, decision: Decision, broker, now: datetime,
                          stop_id, status)
             return [("managed_exit_failed", {
                 "ticker": ticker, "qty": decision.qty, "reason": decision.reason,
+                "deferred": True,
             })]
     fill = broker.place_order_and_confirm(ticker, decision.qty, "SELL") if broker else None
     if broker and not fill:
+        # The stop is gone (cancelled above, or lapsed) but the shares aren't —
+        # re-arm exchange-side protection instead of leaving the position naked
+        # until the next cycle's retry.
         logger.error("Managed-cycle SELL did not fill — qty=%d", decision.qty)
+        _ensure_protective_stop(ticker, broker, cfg, now)
         return [("managed_exit_failed", {
             "ticker": ticker, "qty": decision.qty, "reason": decision.reason,
         })]
@@ -726,7 +769,7 @@ def _execute_buy(ticker: str, decision: Decision, broker, cfg: ManagedConfig,
     pos   = set_position(entry, qty, cfg)
     if broker is not None:
         _update_position(stop_order_id=broker.place_stop_loss(ticker, qty, pos["sl"]),
-                         stop_trigger=pos["sl"])
+                         stop_trigger=pos["sl"], stop_placed_on=now.date().isoformat())
     logger.warning("Managed-cycle BOUGHT %d @ ₹%.2f", qty, entry)
     return [("managed_buy", {
         "ticker": ticker, "entry": entry, "qty": qty, "sl": pos["sl"],
@@ -832,6 +875,16 @@ def format_managed_event(ticker: str, event_type: str, p: dict) -> Optional[str]
             f"{p['reason']}"
         )
     if event_type == "managed_exit_failed":
+        if p.get("deferred"):
+            # No sell order was placed — the resting stop's state couldn't be
+            # confirmed, so the guard held off. Saying "the order didn't
+            # complete" here sent the user chasing a phantom order (2026-07-14).
+            return (
+                f"⚠️ *Sell held off — {ticker}*\n"
+                f"I couldn't confirm the resting stop-loss order's status, so no sell "
+                f"was placed (avoiding a possible double sell). I'll retry within "
+                f"~5 min — please check open orders in Kite."
+            )
         return (
             f"🚨 *Sell didn't go through — {ticker}*\n"
             f"Tried to sell {p['qty']} shares but the order didn't complete. "

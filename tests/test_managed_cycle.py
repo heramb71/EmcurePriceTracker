@@ -843,3 +843,123 @@ def test_step_short_account_blocks_reentry_and_pages():
     events = mc.step("EMCURE", market, broker, _cfg(live=True), now=_NOW)
     assert broker.buys == []
     assert any(t == "managed_short_warn" for t, _ in events)
+
+
+# ── 2026-07-14 incident regressions ───────────────────────────────────────────
+# Live incident: an OVERNIGHT hold's resting stop (a day-validity order) lapsed
+# at the previous close. Its id no longer existed in the next session's order
+# book — cancel raised and order_history returned state=None — so the
+# uncancellable-stop guard deferred the exit every cycle, the "resting" stop
+# protected nothing, and the alert claimed a sell order failed when none was
+# ever placed. _NOW is 2026-06-18, so id prefix 260617… reads as yesterday.
+
+_LAPSED_ID = "260617151274017"      # Kite ids embed placement date as YYMMDD
+_TODAY_ID  = "260618151274017"
+
+
+def test_stop_stale_from_placed_on_field():
+    assert mc._stop_is_stale({"stop_order_id": "x1", "stop_placed_on": "2026-06-17"}, _NOW)
+    assert not mc._stop_is_stale({"stop_order_id": "x1", "stop_placed_on": "2026-06-18"}, _NOW)
+
+
+def test_stop_stale_falls_back_to_id_date_prefix():
+    assert mc._stop_is_stale({"stop_order_id": _LAPSED_ID}, _NOW)
+    assert not mc._stop_is_stale({"stop_order_id": _TODAY_ID}, _NOW)
+    assert not mc._stop_is_stale({"stop_order_id": "stop1"}, _NOW)   # unparseable → not stale
+    assert not mc._stop_is_stale({}, _NOW)                           # no stop at all
+
+
+def test_sell_skips_cancel_when_stop_lapsed_overnight(monkeypatch, tmp_path):
+    """The morning deadlock: cancel of a lapsed overnight stop can only fail
+    with state=None. The sell must proceed without the cancel handshake."""
+    monkeypatch.setenv("EMCURE_DB_PATH", str(tmp_path / "emcure.db"))
+    cfg = _cfg(live=True, sl_rupees=30.0)
+    set_position(1795.35, 8, cfg)
+    mc._update_position(stop_order_id=_LAPSED_ID, stop_trigger=1765.35)
+    broker = _NoCancelBroker(held=8, sell_fill=1830.0)
+
+    events = mc._execute_sell("EMCURE", mc.Decision("sell", price=1830.0, qty=8),
+                              broker, _NOW, cfg)
+
+    assert broker.cancels == []          # no cancel attempt against the dead id
+    assert broker.sells == [8]
+    assert get_position() is None
+    assert any(t == "managed_sell" for t, _ in events)
+
+
+def test_sell_still_deferred_for_same_day_unconfirmable_stop():
+    """A SAME-day stop that can't be cancelled or confirmed dead may still be
+    live at the exchange — the double-sell guard must keep deferring."""
+    cfg = _cfg(live=True, sl_rupees=30.0)
+    set_position(1800.0, 8, cfg)
+    mc._update_position(stop_order_id=_TODAY_ID, stop_trigger=1770.0)
+    broker = _NoCancelBroker(held=8)     # cancel fails, order_state → None
+
+    events = mc._execute_sell("EMCURE", mc.Decision("sell", price=1815.0, qty=8),
+                              broker, _NOW, cfg)
+
+    assert broker.sells == []
+    assert get_position() is not None
+    assert [t for t, _ in events] == ["managed_exit_failed"]
+    assert events[0][1].get("deferred") is True
+
+
+def test_ensure_stop_replaces_overnight_lapsed_stop():
+    """09:15 hold cycle: the recorded stop lapsed at yesterday's close but
+    order_state=None used to read as 'still resting' — the position sat with
+    no exchange protection. A stale stop must be re-placed fresh."""
+    cfg = _cfg(live=True, sl_rupees=30.0)
+    set_position(1795.35, 8, cfg)                      # sl = 1765.35
+    mc._update_position(stop_order_id=_LAPSED_ID, stop_trigger=1765.35)
+    broker = _StopBroker(held=8)
+
+    new_id = mc._ensure_protective_stop("EMCURE", broker, cfg, _NOW)
+
+    assert broker.cancels == []                        # dead id — never cancelled
+    assert broker.stops and broker.stops[-1][1] == 1765.35
+    pos = get_position()
+    assert pos["stop_order_id"] == new_id != _LAPSED_ID
+    assert pos["stop_placed_on"] == _NOW.date().isoformat()
+
+
+class _SellFailBroker(_StopBroker):
+    """Stop cancel succeeds but the market sell never confirms (timeout/reject)."""
+    def place_order_and_confirm(self, ticker, qty, side):
+        if side == "SELL":
+            self.sells.append(qty)
+            return None
+        return super().place_order_and_confirm(ticker, qty, side)
+
+
+def test_failed_sell_rearms_protective_stop():
+    """Cancel-then-sell where the sell doesn't fill used to leave the position
+    with NO resting stop until some later hold cycle. It must re-arm."""
+    cfg = _cfg(live=True, sl_rupees=30.0)
+    set_position(1795.35, 8, cfg)
+    mc._update_position(stop_order_id=_TODAY_ID, stop_trigger=1765.35)
+    broker = _SellFailBroker(held=8)
+
+    events = mc._execute_sell("EMCURE", mc.Decision("sell", price=1830.0, qty=8),
+                              broker, _NOW, cfg)
+
+    assert [t for t, _ in events] == ["managed_exit_failed"]
+    assert events[0][1].get("deferred") is None        # a real order was attempted
+    assert get_position() is not None                  # position kept for retry
+    assert broker.stops                                # …and protected again
+    assert get_position()["stop_order_id"] == broker.stops[-1][2]
+
+
+def test_buy_records_stop_placement_day():
+    broker = _StopBroker(held=0)
+    mc._execute_buy("EMCURE", mc.Decision("reenter", price=1796.8, qty=8),
+                    broker, _cfg(live=True), _NOW)
+    assert get_position()["stop_placed_on"] == _NOW.date().isoformat()
+
+
+def test_exit_failed_message_distinguishes_deferred_from_failed_order():
+    deferred = mc.format_managed_event("EMCURE", "managed_exit_failed",
+                                       {"ticker": "EMCURE", "qty": 8, "reason": "", "deferred": True})
+    failed   = mc.format_managed_event("EMCURE", "managed_exit_failed",
+                                       {"ticker": "EMCURE", "qty": 8, "reason": ""})
+    assert "held off" in deferred and "no sell" in deferred.lower()
+    assert "didn't go through" in failed
