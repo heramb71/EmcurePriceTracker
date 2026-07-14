@@ -214,9 +214,10 @@ def format_signal_alert(
     """Intraday alert when RSI crosses a threshold or signal becomes Strong Buy/Sell.
 
     ``position_note`` (from portfolio_messages.format_signal_position_note)
-    replaces the generic action line when the alerted coin is actually held —
-    generic "consider exiting" advice is wrong for a position below the book
-    band, where selling nets ≈ nothing after fees & tax."""
+    switches the whole alert to a crisp position-first layout: the note leads,
+    and the market read shrinks to a single "Why" line — the holder's
+    actionable levels (book zone, dip-buy zone) already live in the note.
+    Without a note (coin not held) the fuller market layout is kept."""
     if now is None:
         now = datetime.now()
 
@@ -227,6 +228,23 @@ def format_signal_alert(
     pct          = quote["change_pct"]
     arrow        = "▲" if pct >= 0 else "▼"
     sign         = "+" if pct >= 0 else ""
+
+    header = [
+        f"{signal_emoji} *{name} Alert — {signal}*",
+        f"⏰ {now.strftime('%d %b %Y, %H:%M IST')}",
+        "",
+        f"Price: ₹{quote['price_inr']:,.0f}  (${quote['price_usd']:,.0f})"
+        f"   {arrow} {sign}{pct:.1f}% today  |  {sig['change_7d_pct']:+.1f}% in 7 days",
+        "",
+    ]
+
+    if position_note:
+        return "\n".join(header + [
+            position_note,
+            "",
+            f"Why: momentum {_momentum_label(rsi)}; "
+            f"short-term trend {_macd_label(sig['macd_hist'])}",
+        ])
 
     if rsi < 35:
         rsi_note = "🔥 Price is unusually low compared to recent history — historically a good accumulation zone."
@@ -241,13 +259,7 @@ def format_signal_alert(
         "No strong action needed right now."
     )
 
-    lines = [
-        f"{signal_emoji} *{name} Alert — {signal}*",
-        f"⏰ {now.strftime('%d %b %Y, %H:%M IST')}",
-        "",
-        f"Price: ₹{quote['price_inr']:,.0f}  (${quote['price_usd']:,.0f})",
-        f"Today: {arrow} {sign}{pct:.1f}%   |   Last 7 days: {sig['change_7d_pct']:+.1f}%",
-        "",
+    lines = header + [
         f"How it looks:",
         f"Momentum: {_momentum_label(rsi)}",
         f"Short-term trend: {_macd_label(sig['macd_hist'])}",
@@ -259,6 +271,6 @@ def format_signal_alert(
     if rsi_note:
         lines += ["", rsi_note]
 
-    lines += ["", position_note if position_note else f"👉 {action}"]
+    lines += ["", f"👉 {action}"]
 
     return "\n".join(lines)

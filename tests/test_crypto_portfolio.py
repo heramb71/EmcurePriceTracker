@@ -291,3 +291,17 @@ def test_signal_alert_uses_position_note_instead_of_generic_action():
 def test_signal_alert_without_note_keeps_generic_action():
     msg = format_signal_alert("Ethereum", "ETH", _ETH_QUOTE, _SELL_SIG)
     assert "reducing or exiting" in msg
+
+
+def test_signal_alert_with_note_is_compact_and_position_first():
+    stats = pf.holding_stats("ETH", ETH, _ETH_QUOTE["price_inr"])
+    note = format_signal_position_note(
+        "ETH", _ETH_QUOTE, _SELL_SIG, stats, pf.DEFAULT_PLAN)
+    msg = format_signal_alert("Ethereum", "ETH", _ETH_QUOTE, _SELL_SIG,
+                              position_note=note)
+    # Held coin → the generic market blurb collapses to one "Why" line.
+    assert "How it looks" not in msg
+    assert "Tends to bounce" not in msg
+    assert "Don't chase." not in msg                 # rsi_note dropped
+    assert msg.index("Your position") < msg.index("Why:")
+    assert "after fees & tax" in msg

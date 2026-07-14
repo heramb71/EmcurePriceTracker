@@ -190,7 +190,7 @@ def format_signal_position_note(
     gsign = "+" if stats["pnl_pct"] >= 0 else ""
     lines = [
         f"Your position: {stats['qty']:g} {sym} @ ₹{stats['avg_cost_inr']:,.0f} avg"
-        f"  ({gsign}{stats['pnl_pct']:.1f}%)",
+        f"  → {gsign}{stats['pnl_pct']:.1f}% ({_signed_inr(stats['pnl_inr'])})",
     ]
 
     bearish = sig["signal"] in ("Sell", "Strong Sell") or sig["rsi"] > 68
@@ -202,18 +202,19 @@ def format_signal_position_note(
     if bearish:
         if stats["pnl_pct"] >= plan["book_profit_min_pct"]:
             lines += [
-                f"You're in your book-profit zone — selling nets "
-                f"₹{stats['net_pnl_inr']:+,.0f} after fees & tax.",
-                "👉 Consider booking part — keeps the long-term position.",
+                f"Sell now: {_signed_inr(stats['net_pnl_inr'])} net"
+                f" ({stats['net_pnl_pct']:+.1f}%) after fees & tax"
+                f" — inside your book-profit zone.",
+                "👉 Book part, keep the rest.",
             ]
         else:
             lines += [
-                f"Selling here nets ₹{stats['net_pnl_inr']:+,.0f}"
+                f"Sell now: {_signed_inr(stats['net_pnl_inr'])} net"
                 f" ({stats['net_pnl_pct']:+.1f}%) after fees & tax"
                 f" — below your +{plan['book_profit_min_pct']:.0f}%"
                 f" book zone ({_inr(band_lo)}).",
-                "👉 Not a sell for you — treat it as \"don't add here\"."
-                + (f" Dip-buy zone: {_inr(zone[0])}." if zone else ""),
+                "👉 Hold — don't add here."
+                + (f" Buy again near {_inr(zone[0])}." if zone else ""),
             ]
     elif bullish:
         if dip_level(sig, plan):
@@ -223,11 +224,11 @@ def format_signal_position_note(
             lines.append(note)
         else:
             lines.append(
-                "👉 Price hasn't reached your dip-buy zone"
-                + (f" ({_inr(zone[0])})" if zone else "")
-                + " — wait for it, don't chase."
+                "👉 Wait — your dip-buy zone is"
+                + (f" {_inr(zone[0])}," if zone else "")
+                + " don't chase."
             )
     else:
-        lines.append("👉 No action needed for your position.")
+        lines.append("👉 No action for your position.")
 
     return "\n".join(lines)
