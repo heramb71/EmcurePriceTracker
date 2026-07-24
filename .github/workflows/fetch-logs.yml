@@ -19,6 +19,7 @@ on:
           - tracker
           - bot
           - kittybot
+          - screener
           - both
         default: tracker
       lines:
@@ -68,6 +69,7 @@ jobs:
             tracker)  FILES="tracker" ;;
             bot)      FILES="bot" ;;
             kittybot) FILES="kittybot" ;;
+            screener) FILES="kitty_screener" ;;
             both)     FILES="tracker bot" ;;
             *)        echo "::error::Unknown service: $SVC"; exit 1 ;;
           esac
