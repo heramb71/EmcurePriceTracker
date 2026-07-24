@@ -18,6 +18,7 @@ on:
         options:
           - tracker
           - bot
+          - kittybot
           - both
         default: tracker
       lines:
@@ -64,10 +65,11 @@ jobs:
           mkdir -p "$OUT"
 
           case "$SVC" in
-            tracker) FILES="tracker" ;;
-            bot)     FILES="bot" ;;
-            both)    FILES="tracker bot" ;;
-            *)       echo "::error::Unknown service: $SVC"; exit 1 ;;
+            tracker)  FILES="tracker" ;;
+            bot)      FILES="bot" ;;
+            kittybot) FILES="kittybot" ;;
+            both)     FILES="tracker bot" ;;
+            *)        echo "::error::Unknown service: $SVC"; exit 1 ;;
           esac
 
           for f in $FILES; do
