@@ -77,10 +77,13 @@ jobs:
                  systemctl status \"\$u\" --no-pager -l 2>&1 | head -n 15 || echo '(unit not found)'; \
                  echo; \
                done; \
+               echo \"===== /var/log/emcure ls -la =====\"; \
+               sudo -n ls -la /var/log/emcure/ 2>&1 || ls -la /var/log/emcure/ 2>&1; \
+               echo; \
                for f in tracker bot kittybot; do \
                  ERR=/var/log/emcure/\$f.err; \
                  echo \"===== \$f.err (last $LINES lines) =====\"; \
-                 [ -f \"\$ERR\" ] && tail -n $LINES \"\$ERR\" || echo '(no such file)'; \
+                 sudo -n test -f \"\$ERR\" 2>/dev/null && sudo -n tail -n $LINES \"\$ERR\" || echo '(no such file, or sudo unavailable)'; \
                  echo; \
                done" \
               > "$OUT/status-$DAY.log" || echo "::warning::ssh failed for status"
@@ -109,14 +112,17 @@ jobs:
               "$SSH_USER@$SSH_HOST" \
               "LOG=/var/log/emcure/$f.log; \
                if [ ! -f \"\$LOG\" ]; then echo \"(no such log: \$LOG)\"; exit 0; fi; \
+               CAT='cat'; ZCAT='zcat'; \
+               [ -r \"\$LOG\" ] || { CAT='sudo -n cat'; ZCAT='sudo -n zcat'; }; \
                MERGED=\$(mktemp); \
-               for g in \$(ls -tr \"\$LOG\".*.gz 2>/dev/null); do zcat \"\$g\" >> \"\$MERGED\"; done; \
-               [ -f \"\$LOG.1\" ] && cat \"\$LOG.1\" >> \"\$MERGED\"; \
-               cat \"\$LOG\" >> \"\$MERGED\"; \
+               for g in \$(ls -tr \"\$LOG\".*.gz 2>/dev/null); do \$ZCAT \"\$g\" >> \"\$MERGED\" 2>>\"\$MERGED.err\"; done; \
+               [ -f \"\$LOG.1\" ] && \$CAT \"\$LOG.1\" >> \"\$MERGED\" 2>>\"\$MERGED.err\"; \
+               \$CAT \"\$LOG\" >> \"\$MERGED\" 2>>\"\$MERGED.err\"; \
                M=\$(grep -F \"$DAY\" \"\$MERGED\" || true); \
                if [ -n \"\$M\" ]; then printf '%s\n' \"\$M\"; \
                else echo \"(no lines matched $DAY — showing last $LINES lines across rotated logs)\"; tail -n $LINES \"\$MERGED\"; fi; \
-               rm -f \"\$MERGED\"" \
+               if [ -s \"\$MERGED.err\" ]; then echo '--- read errors ---'; cat \"\$MERGED.err\"; fi; \
+               rm -f \"\$MERGED\" \"\$MERGED.err\"" \
               > "$OUT/$f-$DAY.log" || echo "::warning::ssh failed for $f"
             echo "  -> $(wc -l < "$OUT/$f-$DAY.log") lines captured"
           done
