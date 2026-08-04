@@ -21,6 +21,7 @@ on:
           - kittybot
           - screener
           - both
+          - status
         default: tracker
       lines:
         description: "Fallback: last N lines if nothing matches the date"
@@ -64,6 +65,28 @@ jobs:
 
           OUT="$RUNNER_TEMP/logs"
           mkdir -p "$OUT"
+
+          if [ "$SVC" = "status" ]; then
+            # systemctl status for every emcure unit + tail of each .err (stderr) file —
+            # stdout logs alone can't distinguish "not running" from "quiet".
+            ssh -i ~/.ssh/id_deploy -p "$PORT" \
+              -o StrictHostKeyChecking=accept-new \
+              "$SSH_USER@$SSH_HOST" \
+              "for u in emcure-tracker emcure-bot emcure-kittybot emcure-radar emcure-crypto; do \
+                 echo \"===== \$u =====\"; \
+                 systemctl status \"\$u\" --no-pager -l 2>&1 | head -n 15 || echo '(unit not found)'; \
+                 echo; \
+               done; \
+               for f in tracker bot kittybot; do \
+                 ERR=/var/log/emcure/\$f.err; \
+                 echo \"===== \$f.err (last $LINES lines) =====\"; \
+                 [ -f \"\$ERR\" ] && tail -n $LINES \"\$ERR\" || echo '(no such file)'; \
+                 echo; \
+               done" \
+              > "$OUT/status-$DAY.log" || echo "::warning::ssh failed for status"
+            echo "  -> $(wc -l < "$OUT/status-$DAY.log") lines captured"
+            exit 0
+          fi
 
           case "$SVC" in
             tracker)  FILES="tracker" ;;
