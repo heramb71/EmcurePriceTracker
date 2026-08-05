@@ -407,6 +407,9 @@ def _refresh(ticker: str, news_snapshot: dict | None = None, broker=None) -> dic
             "gap":      _mc_s7["gap"],
             "sma7":     _mc_s7["sma7"],
             "trend_7d": classify_7d_trend(df_daily),
+            # Only consumed by MANAGED_REGIME_FILTER=stabilization (see
+            # _regime_permits_reversion) — inert otherwise.
+            "recent_closes": df_daily["close"].tail(2).tolist(),
         }
         # Execute the cycle ONLY during live market hours. _refresh() is also
         # called from the pre-open briefing and the post-close summary for data;

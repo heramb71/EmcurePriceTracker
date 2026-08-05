@@ -61,6 +61,7 @@ class ManagedConfig:
     reentry_cooldown_min: float   # min minutes between an exit and the next entry
     block_reentry_after_stop: bool  # no re-entry the same day as a stop-out
     reentry_gap_pct: float = 0.0  # >0 → gap trigger = sma7 × pct/100 (overrides the ₹ gap)
+    regime_filter: str = "trend"  # MANAGED_REGIME_FILTER — trend | off | stabilization
 
     @classmethod
     def from_env(cls) -> "ManagedConfig":
@@ -85,6 +86,10 @@ class ManagedConfig:
             # Opt-in percentage mode keeps the trigger scale-invariant (the
             # radar's validated SMA7 threshold is 1.4% for the same reason).
             reentry_gap_pct          = float(os.getenv("MANAGED_REENTRY_GAP_PCT", "0") or 0),
+            # trend (default) preserves today's exact behavior. off/stabilization
+            # are the 2026-08-05 technical-research variants — opt-in only, see
+            # _regime_permits_reversion.
+            regime_filter    = os.getenv("MANAGED_REGIME_FILTER", "trend").strip().lower(),
         )
 
 
@@ -119,6 +124,43 @@ def choose_target(entry: float, probs: dict, cfg: ManagedConfig) -> Optional[dic
                    if reachable else
                    max(scored, key=lambda c: c[2]))       # else the most likely
     return {"delta": d, "price": price, "label": f"+₹{d:.0f}", "prob": round(p)}
+
+
+def _entry_signal_fires(gap: float, threshold: float) -> bool:
+    """SMA7 mean-reversion entry signal: price at least `threshold` below sma7."""
+    return gap <= -threshold
+
+
+def _regime_permits_reversion(market: dict, cfg: ManagedConfig) -> bool:
+    """Whether the current regime should allow a mean-reversion re-entry.
+
+    Split out from the entry signal (2026-08-05 technical-research finding: the
+    two were previously fused into one boolean, which is why the 2026-07-06
+    backtest study couldn't isolate "bad gate" from "bad signal"). Modes, via
+    MANAGED_REGIME_FILTER:
+
+      trend         (default) — today's exact production behavior: block only
+                    when classify_7d_trend's daily-close label is "Downward".
+      off           — no regime gate at all (the study's "no-gate" variant,
+                    which recovered the blocked winners in-sample).
+      stabilization — block unless the last 2 entries of market["recent_closes"]
+                    are rising. CAVEAT: the 2026-07-06 study validated
+                    stabilization on 5-min intraday bars; this production call
+                    site only has daily closes, so this is an adapted
+                    hypothesis at a different granularity, not the exact
+                    validated variant — treat as unvalidated until backtested
+                    at this granularity. Falls back to the trend-label check
+                    when fewer than 2 closes are supplied.
+    """
+    mode = cfg.regime_filter
+    if mode == "off":
+        return True
+    if mode == "stabilization":
+        closes = market.get("recent_closes") or []
+        if len(closes) >= 2:
+            return float(closes[-1]) > float(closes[-2])
+        # Not enough data to judge stabilization — fall back to the trend label.
+    return market.get("trend_7d", "") != "Downward"
 
 
 def decide(position: Optional[dict], market: dict, cfg: ManagedConfig) -> Decision:
@@ -195,7 +237,7 @@ def decide(position: Optional[dict], market: dict, cfg: ManagedConfig) -> Decisi
     threshold = cfg.reentry_gap
     if cfg.reentry_gap_pct > 0 and sma7 > 0:
         threshold = round(sma7 * cfg.reentry_gap_pct / 100, 2)
-    if gap <= -threshold and trend != "Downward":
+    if _entry_signal_fires(gap, threshold) and _regime_permits_reversion(market, cfg):
         return Decision(
             "reenter", reason=f"Price is ₹{abs(gap):.0f} below its recent average — buying the dip",
             price=price, qty=cfg.qty,

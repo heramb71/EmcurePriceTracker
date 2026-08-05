@@ -123,6 +123,61 @@ def test_decide_wait_when_gap_too_small():
     assert decide(None, market, _cfg()).action == "wait"
 
 
+# ── regime_filter: pluggable re-entry gate (2026-08-05 research) ─────────────
+
+def test_entry_signal_fires_at_threshold():
+    from src.emcure.managed_cycle import _entry_signal_fires
+    assert _entry_signal_fires(gap=-20, threshold=20) is True
+    assert _entry_signal_fires(gap=-19, threshold=20) is False
+
+
+def test_regime_permits_reversion_default_trend_mode_matches_legacy_behavior():
+    from src.emcure.managed_cycle import _regime_permits_reversion
+    cfg = _cfg()  # regime_filter defaults to "trend"
+    assert _regime_permits_reversion({"trend_7d": "Upward"}, cfg) is True
+    assert _regime_permits_reversion({"trend_7d": "Downward"}, cfg) is False
+    assert _regime_permits_reversion({"trend_7d": "Choppy"}, cfg) is True
+
+
+def test_regime_permits_reversion_off_mode_always_allows():
+    from src.emcure.managed_cycle import _regime_permits_reversion
+    cfg = _cfg(regime_filter="off")
+    assert _regime_permits_reversion({"trend_7d": "Downward"}, cfg) is True
+
+
+def test_regime_permits_reversion_stabilization_mode_reads_recent_closes():
+    from src.emcure.managed_cycle import _regime_permits_reversion
+    cfg = _cfg(regime_filter="stabilization")
+    assert _regime_permits_reversion({"recent_closes": [1700, 1710]}, cfg) is True   # rising
+    assert _regime_permits_reversion({"recent_closes": [1710, 1700]}, cfg) is False  # falling
+
+
+def test_regime_permits_reversion_stabilization_falls_back_to_trend_without_data():
+    from src.emcure.managed_cycle import _regime_permits_reversion
+    cfg = _cfg(regime_filter="stabilization")
+    # No recent_closes supplied — falls back to the trend label.
+    assert _regime_permits_reversion({"trend_7d": "Upward"}, cfg) is True
+    assert _regime_permits_reversion({"trend_7d": "Downward"}, cfg) is False
+
+
+def test_decide_off_mode_reenters_despite_downtrend_label():
+    market = {"price": 1700, "gap": -25, "trend_7d": "Downward"}
+    d = decide(None, market, _cfg(regime_filter="off"))
+    assert d.action == "reenter"
+
+
+def test_decide_stabilization_mode_blocks_on_falling_closes_even_if_label_upward():
+    market = {"price": 1700, "gap": -25, "trend_7d": "Upward", "recent_closes": [1710, 1700]}
+    d = decide(None, market, _cfg(regime_filter="stabilization"))
+    assert d.action == "wait"
+
+
+def test_decide_stabilization_mode_allows_on_rising_closes():
+    market = {"price": 1700, "gap": -25, "trend_7d": "Downward", "recent_closes": [1690, 1700]}
+    d = decide(None, market, _cfg(regime_filter="stabilization"))
+    assert d.action == "reenter"
+
+
 # ── step: dry-run never places orders, de-dups announcements ─────────────────
 
 class _FakeBroker:
