@@ -29,13 +29,35 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on the 3.10 server
 logger = logging.getLogger(__name__)
 
 # Fallback kitty universe, used only when daily_picks.json is missing/unreadable.
-# High-beta PSU / metals / thematic names that routinely move 2–5% intraday.
-DEFAULT_UNIVERSE: tuple[str, ...] = (
+# High-beta PSU / metals / thematic names that routinely move 2–5% intraday —
+# this is also the screener's actual scan universe (apps/kitty_screener.py).
+_CURATED_HIGH_BETA: tuple[str, ...] = (
     "ADANIENT", "ADANIGREEN", "ADANIPOWER", "ADANIENSOL", "TATAMOTORS", "VEDL",
     "JINDALSTEL", "HINDALCO", "TATASTEEL", "BANKBARODA", "CANBK", "PNB",
     "INDUSINDBK", "BEL", "HAL", "CGPOWER", "TATAPOWER", "JSWENERGY", "TRENT",
     "IRFC", "PFC", "RECLTD", "ETERNAL", "SWIGGY", "LODHA", "DLF", "DIXON",
     "MOTHERSON", "SHRIRAMFIN", "JIOFIN", "NAUKRI", "VBL",
+)
+
+# Nifty 50 constituents (sourced 2026-08-04; NSE reconstitutes semi-annually —
+# re-verify against nseindia.com before relying on this for anything beyond
+# scan candidates for the screener's own ADTV/score gates).
+NIFTY_50: tuple[str, ...] = (
+    "ADANIENT", "ADANIPORTS", "APOLLOHOSP", "ASIANPAINT", "AXISBANK",
+    "BAJAJ-AUTO", "BAJFINANCE", "BAJAJFINSV", "BEL", "BHARTIARTL", "CIPLA",
+    "COALINDIA", "DRREDDY", "EICHERMOT", "ETERNAL", "GRASIM", "HCLTECH",
+    "HDFCBANK", "HDFCLIFE", "HINDALCO", "HINDUNILVR", "ICICIBANK", "INDIGO",
+    "INFY", "ITC", "JIOFIN", "JSWSTEEL", "KOTAKBANK", "LT", "M&M", "MARUTI",
+    "MAXHEALTH", "NESTLEIND", "NTPC", "ONGC", "POWERGRID", "RELIANCE",
+    "SBILIFE", "SHRIRAMFIN", "SBIN", "SUNPHARMA", "TCS", "TATACONSUM", "TMPV",
+    "TATASTEEL", "TECHM", "TITAN", "TRENT", "ULTRACEMCO", "WIPRO",
+)
+
+# The curated high-beta list plus every Nifty 50 name not already in it. The
+# ADTV(₹100cr) and hit-rate/score gates in screener.py do the real filtering —
+# this just widens the daily candidate pool.
+DEFAULT_UNIVERSE: tuple[str, ...] = _CURATED_HIGH_BETA + tuple(
+    s for s in NIFTY_50 if s not in _CURATED_HIGH_BETA
 )
 
 # Default config file location (repo-root/config/kittybot.toml).

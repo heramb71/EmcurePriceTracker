@@ -16,15 +16,26 @@ reward_risk_ratio = 2.0     # target : stop — 2:1 means stop = half the target
 picks_path = "daily_picks.json"
 picks_max_age_hours = 24.0  # skip the day entirely if the file is older than this
 max_picks = 5               # consider only the top-N ranked candidates
-# Used ONLY when daily_picks.json is missing/unreadable. These carry no scores,
-# so the bot trades them purely on the opening-range breakout with default
-# target/stop percentages.
+# Used ONLY when daily_picks.json is missing/unreadable — and it's also the
+# screener's live scan universe (kitty_screener.py). The first 32 are a
+# hand-curated high-beta list (routinely move 2-5% intraday); the rest fill in
+# every Nifty 50 constituent not already present (sourced 2026-08-04 — NSE
+# reconstitutes semi-annually, re-verify against nseindia.com periodically).
+# These carry no scores when used as the bot's own fallback, so it trades them
+# purely on the opening-range breakout with default target/stop percentages.
 fallback_universe = [
     "ADANIENT", "ADANIGREEN", "ADANIPOWER", "ADANIENSOL", "TATAMOTORS", "VEDL",
     "JINDALSTEL", "HINDALCO", "TATASTEEL", "BANKBARODA", "CANBK", "PNB",
     "INDUSINDBK", "BEL", "HAL", "CGPOWER", "TATAPOWER", "JSWENERGY", "TRENT",
     "IRFC", "PFC", "RECLTD", "ETERNAL", "SWIGGY", "LODHA", "DLF", "DIXON",
-    "MOTHERSON", "SHRIRAMFIN", "JIOFIN", "NAUKRI", "VBL",
+    "MOTHERSON", "SHRIRAMFIN", "JIOFIN", "NAUKRI", "VBL", "ADANIPORTS",
+    "APOLLOHOSP", "ASIANPAINT", "AXISBANK", "BAJAJ-AUTO", "BAJFINANCE",
+    "BAJAJFINSV", "BHARTIARTL", "CIPLA", "COALINDIA", "DRREDDY", "EICHERMOT",
+    "GRASIM", "HCLTECH", "HDFCBANK", "HDFCLIFE", "HINDUNILVR", "ICICIBANK",
+    "INDIGO", "INFY", "ITC", "JSWSTEEL", "KOTAKBANK", "LT", "M&M", "MARUTI",
+    "MAXHEALTH", "NESTLEIND", "NTPC", "ONGC", "POWERGRID", "RELIANCE", "SBILIFE",
+    "SBIN", "SUNPHARMA", "TCS", "TATACONSUM", "TMPV", "TECHM", "TITAN",
+    "ULTRACEMCO", "WIPRO",
 ]
 
 [filters]
