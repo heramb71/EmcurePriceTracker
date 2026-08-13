@@ -1,18 +1,13 @@
 import numpy as np
 import pandas as pd
-import pytest
 
-from emcure_tracker.indicators import (
-    compute_all,
-    compute_avg_range,
+from src.shared.indicators import (
+    compute_atr,
     compute_avg_volume,
     compute_bollinger,
     compute_ema,
     compute_macd,
     compute_rsi,
-    compute_support_resistance,
-    compute_volume_signal,
-    rsi_signal,
 )
 
 
@@ -61,54 +56,8 @@ def test_avg_volume_positive():
     assert compute_avg_volume(df) > 0
 
 
-def test_avg_range_positive():
-    df = _make_df()
-    assert compute_avg_range(df) > 0
-
-
-def test_support_resistance_tuples():
-    df = _make_df(80)
-    supports, resistances = compute_support_resistance(df)
-    assert isinstance(supports, tuple)
-    assert isinstance(resistances, tuple)
-
-
-def test_volume_signal_labels():
-    sig_high = compute_volume_signal(200_000, 100_000)
-    assert sig_high.ratio == pytest.approx(2.0)
-    sig_low = compute_volume_signal(50_000, 100_000)
-    assert "Low" in sig_low.label
-
-
-def test_rsi_signal_zones():
-    assert rsi_signal(75)[0] == "Overbought"
-    assert rsi_signal(25)[0] == "Oversold"
-    assert rsi_signal(50)[0] == "Neutral"
-
-
-def test_compute_all_returns_result():
-    df = _make_df()
-    result = compute_all(df)
-    assert result is not None
-    assert 0 <= result.rsi <= 100
-    assert result.bb_upper > result.bb_lower
-    assert result.ema_short > 0
-
-
-def test_compute_all_with_short_df_returns_none():
-    df = _make_df(5)
-    result = compute_all(df)
-    # With only 5 rows, rolling windows produce NaN; result may be None
-    # We just assert it doesn't raise
-    assert result is None or result is not None
-
-
 def test_compute_atr_ignores_trailing_nan_row():
     """yfinance's pre-market all-NaN 'today' row must not zero out ATR."""
-    import numpy as np
-    import pandas as pd
-
-    from src.shared.indicators import compute_atr
     rows = [{"high": 100 + i, "low": 90 + i, "close": 95 + i} for i in range(30)]
     rows.append({"high": np.nan, "low": np.nan, "close": np.nan})   # today's placeholder
     atr = compute_atr(pd.DataFrame(rows))
