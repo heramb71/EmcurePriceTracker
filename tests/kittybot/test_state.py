@@ -70,3 +70,31 @@ def test_set_and_parse_halt(tmp_path):
     assert state.parse_halt_until(state.load(path)) == date(2026, 7, 13)
     state.set_halt(path, None)
     assert state.parse_halt_until(state.load(path)) is None
+
+
+def test_record_exit_attempt_increments_and_persists(tmp_path):
+    path = str(tmp_path / "s.json")
+    state.open_position(path, _plan(), session_date=date(2026, 7, 6),
+                        entry_order_id="x", fill_price=100.0)
+    assert state.record_exit_attempt(path) == 1
+    assert state.record_exit_attempt(path) == 2
+    assert state.get_position(path)["exit_fail_count"] == 2
+
+
+def test_record_exit_attempt_no_position_returns_zero(tmp_path):
+    path = str(tmp_path / "s.json")
+    assert state.record_exit_attempt(path) == 0
+
+
+def test_mark_carryover_alerted_once_per_day(tmp_path):
+    path = str(tmp_path / "s.json")
+    state.open_position(path, _plan(), session_date=date(2026, 7, 6),
+                        entry_order_id="x", fill_price=100.0)
+    assert state.mark_carryover_alerted(path, date(2026, 7, 7)) is True
+    assert state.mark_carryover_alerted(path, date(2026, 7, 7)) is False
+    assert state.mark_carryover_alerted(path, date(2026, 7, 8)) is True
+
+
+def test_mark_carryover_alerted_no_position_returns_false(tmp_path):
+    path = str(tmp_path / "s.json")
+    assert state.mark_carryover_alerted(path, date(2026, 7, 7)) is False

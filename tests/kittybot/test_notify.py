@@ -110,6 +110,8 @@ class SpyNotifier:
     def entry(self, plan, fill): self.calls.append(("entry", plan.symbol))
     def breakeven(self, symbol, stop): self.calls.append(("breakeven", symbol))
     def exit(self, symbol, reason, price, pnl): self.calls.append(("exit", symbol, reason))
+    def exit_failed(self, symbol, reason): self.calls.append(("exit_failed", symbol, reason))
+    def exit_stuck(self, symbol, session_date): self.calls.append(("exit_stuck", symbol, session_date))
 
     def kinds(self):
         return [c[0] for c in self.calls]
@@ -153,3 +155,53 @@ def test_engine_alerts_on_plan_and_entry_and_exit(tmp_path, monkeypatch):
     assert "entry" in kinds
     assert "breakeven" in kinds
     assert ("exit", "TATAMOTORS", "TARGET") in spy.calls
+
+
+class FailingExitFake:
+    """Fills entries but the broker never confirms an exit (persistent rejection)."""
+
+    name = "fake"
+
+    def place_market(self, sym, qty, side, product):
+        from src.kittybot.broker import BUY, Fill
+        if side == BUY:
+            return Fill(order_id="F1", side=side, qty=qty, price=106.0, status="COMPLETE")
+        return None
+
+
+def test_exit_failure_backs_off_repeated_alerts(tmp_path, monkeypatch):
+    """A persistently rejecting broker must not spam an identical alert every tick."""
+    cfg, _, spy = _wire(tmp_path, monkeypatch)
+    engine = KittyBotEngine(cfg, broker=FailingExitFake(), notifier=spy)
+    engine.step(TODAY.replace(hour=9, minute=15))
+    engine.step(TODAY.replace(hour=9, minute=31))   # entry (BUY) fills fine
+    assert ("entry", "TATAMOTORS") in spy.calls
+
+    monkeypatch.setattr(marketdata, "live_tick", lambda s: (110.0, 1500.0))  # target reached
+    for _ in range(11):
+        engine.step(TODAY.replace(hour=12, minute=0))
+
+    exit_failed_calls = [c for c in spy.calls if c[0] == "exit_failed"]
+    assert len(exit_failed_calls) == 2   # attempt 1, then attempt 10 — not all 11
+    assert not any(c[0] == "exit" for c in spy.calls)
+
+
+def test_carryover_alert_fires_once_when_position_spans_days(tmp_path, monkeypatch):
+    """A position still open the next day must alert once and block new trading."""
+    cfg, _, spy = _wire(tmp_path, monkeypatch)
+    engine = KittyBotEngine(cfg, broker=FailingExitFake(), notifier=spy)
+    engine.step(TODAY.replace(hour=9, minute=15))
+    engine.step(TODAY.replace(hour=9, minute=31))              # entry fills
+    monkeypatch.setattr(marketdata, "live_tick", lambda s: (110.0, 1500.0))
+    engine.step(TODAY.replace(hour=15, minute=10))             # hard exit attempt fails
+
+    spy.calls.clear()
+    next_day = datetime(2026, 7, 7, 9, 20)                     # position never closed
+    engine.step(next_day)
+    stuck = [c for c in spy.calls if c[0] == "exit_stuck"]
+    assert stuck == [("exit_stuck", "TATAMOTORS", "2026-07-06")]
+    assert "daily_plan" not in spy.kinds()  # _prepare() never runs while stuck open
+
+    # A second tick the same day must not re-alert.
+    engine.step(next_day.replace(minute=25))
+    assert len([c for c in spy.calls if c[0] == "exit_stuck"]) == 1

@@ -92,6 +92,25 @@ def format_breakeven(symbol: str, stop: float, live: bool) -> str:
     ])
 
 
+def format_exit_failed(symbol: str, reason: str, live: bool) -> str:
+    return "\n".join([
+        f"⚠️ *KittyBot — exit NOT confirmed ({symbol})*", "",
+        f"Broker did not confirm the {reason} exit fill. Position may still be "
+        "open and unprotected — check the broker and journal now.", "",
+        _foot(live),
+    ])
+
+
+def format_exit_stuck(symbol: str, session_date: str, live: bool) -> str:
+    return "\n".join([
+        f"🚨 *KittyBot — position stuck open ({symbol})*", "",
+        f"Entered {session_date}, exit still never confirmed by the broker. "
+        "This position has carried into today and no new trade will be taken "
+        "until it resolves. Manual check required now.", "",
+        _foot(live),
+    ])
+
+
 def format_exit(symbol: str, reason: str, exit_price: float, pnl: float, live: bool) -> str:
     label = {"TARGET": "🎯 Target hit", "STOP": "🛑 Stopped out",
              "TIME": "⏰ Time exit (15:10)"}.get(reason, reason)
@@ -143,6 +162,12 @@ class KittyNotifier:
 
     def exit(self, symbol: str, reason: str, exit_price: float, pnl: float) -> None:
         self._send(format_exit(symbol, reason, exit_price, pnl, self.live))
+
+    def exit_failed(self, symbol: str, reason: str) -> None:
+        self._send(format_exit_failed(symbol, reason, self.live))
+
+    def exit_stuck(self, symbol: str, session_date: str) -> None:
+        self._send(format_exit_stuck(symbol, session_date, self.live))
 
 
 def make_notifier(cfg) -> Optional[KittyNotifier]:

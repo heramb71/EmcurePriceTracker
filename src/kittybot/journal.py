@@ -30,6 +30,7 @@ ENTRY = "entry"
 ENTRY_FAILED = "entry_failed"
 STOP_MOVED = "stop_moved"
 EXIT = "exit"
+EXIT_FAILED = "exit_failed"
 ERROR = "error"
 
 

@@ -78,6 +78,36 @@ def update_stop(path: str, new_stop: float) -> None:
             state["position"]["live_stop"] = round(new_stop, 2)
 
 
+def record_exit_attempt(path: str) -> int:
+    """Increment and return the open position's failed-exit-attempt counter.
+
+    Backs the engine's alert backoff — retried every tick but only re-alerted
+    every Nth attempt — so a persistently rejecting broker can't spam Telegram.
+    """
+    with transaction(path) as state:
+        pos = state.get("position")
+        if not pos:
+            return 0
+        pos["exit_fail_count"] = pos.get("exit_fail_count", 0) + 1
+        return pos["exit_fail_count"]
+
+
+def mark_carryover_alerted(path: str, today: date) -> bool:
+    """Record that today's stuck-position carryover alert has been sent.
+
+    Returns ``True`` the first time this is called for ``today`` (so the
+    caller should alert), ``False`` on any later call the same day.
+    """
+    with transaction(path) as state:
+        pos = state.get("position")
+        if not pos:
+            return False
+        if pos.get("carryover_alert_date") == today.isoformat():
+            return False
+        pos["carryover_alert_date"] = today.isoformat()
+        return True
+
+
 def close_position(path: str, *, result_date: date, is_loss: bool) -> None:
     """Clear the open position and fold the outcome into the loss streak.
 

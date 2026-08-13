@@ -131,6 +131,14 @@ class KittyBotConfig:
         """True only when a live broker will actually place money orders."""
         return self.live and self.broker != "paper"
 
+    def __post_init__(self) -> None:
+        """Fail fast on an inverted entry window rather than skip-looping all day."""
+        if self.select_time_t >= self.no_trade_after_t:
+            raise ValueError(
+                f"select_time ({self.select_time}) must be before "
+                f"no_trade_after ({self.no_trade_after})"
+            )
+
 
 def parse_hhmm(value: str) -> dtime:
     """Parse an ``"HH:MM"`` wall-clock string into a ``datetime.time``."""

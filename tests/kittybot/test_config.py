@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import time as dtime
 
+import pytest
+
 from src.kittybot.config import KittyBotConfig, load_config, parse_hhmm
 
 
@@ -23,6 +25,18 @@ def test_derived_time_properties():
     assert cfg.select_time_t == dtime(9, 30)
     assert cfg.hard_exit_t == dtime(15, 10)
     assert cfg.no_trade_after_t == dtime(10, 30)
+
+
+def test_inverted_entry_window_rejected():
+    from dataclasses import replace
+    with pytest.raises(ValueError, match="select_time"):
+        replace(KittyBotConfig(), select_time="10:30", no_trade_after="09:30")
+
+
+def test_equal_select_time_and_cutoff_rejected():
+    from dataclasses import replace
+    with pytest.raises(ValueError, match="select_time"):
+        replace(KittyBotConfig(), select_time="10:30", no_trade_after="10:30")
 
 
 def test_sends_real_orders_requires_live_and_non_paper():

@@ -31,6 +31,7 @@ from src.kittybot.selection import select_trigger
 logger = logging.getLogger("kittybot.engine")
 
 _PLAN_FIELDS = ("symbol", "direction", "entry", "stop", "target", "qty", "risk_rupees")
+_EXIT_RETRY_ALERT_EVERY = 10  # re-alert every 10th failed exit attempt, not every tick
 
 
 class KittyBotEngine:
@@ -78,11 +79,14 @@ class KittyBotEngine:
             self._try_enter(now)
 
     def _ready_to_enter(self, now: datetime) -> bool:
+        # No upper bound here: _try_enter must still run on the first tick at/after
+        # no_trade_after_t so it can journal+alert the no-trigger cutoff and latch
+        # self._entered — otherwise the day just goes quiet with no explanation.
         return (
             self._prepared
             and not self._skip_day
             and not self._entered
-            and self.cfg.select_time_t <= now.time() < self.cfg.no_trade_after_t
+            and now.time() >= self.cfg.select_time_t
         )
 
     # ── step 1: prepare (load kitty, rails, discards) ─────────────────────────
@@ -99,8 +103,16 @@ class KittyBotEngine:
             generated_at=kitty.generated_at, now=now,
             picks_max_age_hours=self.cfg.picks_max_age_hours, halt_until=halt_until,
         )
-        # VIX is checked separately at select time; here only staleness + halt block.
-        blocking = [c for c in decision.checks if c.blocked and c.name != "India VIX spike"]
+        # VIX is checked separately at select time. A fallback kitty (missing/
+        # unreadable/empty daily_picks.json) has no generated_at by construction,
+        # which would otherwise always trip "Picks freshness" — the fallback
+        # universe IS the degrade path for that case, so it must not also skip
+        # the day. A present-but-genuinely-stale JSON kitty still blocks.
+        blocking = [
+            c for c in decision.checks
+            if c.blocked and c.name != "India VIX spike"
+            and not (c.name == "Picks freshness" and kitty.source == "fallback")
+        ]
         if blocking:
             self._skip_day = True
             reasons = [f"{c.name}: {c.detail}" for c in blocking]
@@ -139,7 +151,10 @@ class KittyBotEngine:
     def _try_enter(self, now: datetime) -> None:
         if self._check_vix(now):
             return
+        past_cutoff = now.time() >= self.cfg.no_trade_after_t
         if not self._survivors:
+            if past_cutoff:
+                self._entered = True  # nothing to trade all day — stop ticking
             return
 
         triggers = []
@@ -158,12 +173,25 @@ class KittyBotEngine:
         winner = select_trigger(triggers)
         if winner is None:
             # No trigger yet — the loop retries until no_trade_after, then logs once.
-            if now.time() >= self.cfg.no_trade_after_t:
+            if past_cutoff:
                 journal.record(self.cfg.journal_dir, journal.NO_TRIGGER,
                                {"note": "no breakout by cutoff — no trade today"}, when=now)
                 if self.notifier:
                     self.notifier.skip(["no opening-range breakout by cutoff"])
                 self._entered = True  # stop trying for the day
+            return
+
+        if past_cutoff:
+            # A breakout fired, but only after the entry cutoff — spec says no
+            # new entries after this. Log every symbol that triggered (not just
+            # the winner) and stand down rather than chase any of them.
+            late_symbols = ", ".join(sorted(t.symbol for t in triggers))
+            note = (f"breakout(s) after the {self.cfg.no_trade_after} cutoff: "
+                    f"{late_symbols} — skipped (would have picked {winner.symbol})")
+            journal.record(self.cfg.journal_dir, journal.NO_TRIGGER, {"note": note}, when=now)
+            if self.notifier:
+                self.notifier.skip([note])
+            self._entered = True
             return
 
         self._place_entry(winner, by_symbol[winner.symbol], now)
@@ -209,6 +237,8 @@ class KittyBotEngine:
         pos = state.get_position(self.cfg.state_path)
         if not pos:
             return
+        if pos.get("session_date") != now.date().isoformat():
+            self._alert_carryover(pos, now)
         tick = marketdata.live_tick(pos["symbol"])
         # Even with no fresh tick we must honour the hard time-exit.
         price = tick[0] if tick else pos.get("entry_fill", pos["entry"])
@@ -230,17 +260,45 @@ class KittyBotEngine:
         if reason is not None:
             self._exit(plan, price, reason, now)
 
+    def _alert_carryover(self, pos: dict, now: datetime) -> None:
+        """Once per new day, loudly flag a position that never finished exiting."""
+        if state.mark_carryover_alerted(self.cfg.state_path, now.date()):
+            journal.record(self.cfg.journal_dir, journal.EXIT_FAILED,
+                           {"symbol": pos["symbol"],
+                            "note": f"position carried over from {pos['session_date']} — "
+                                    "exit never confirmed, manual check needed"},
+                           when=now)
+            if self.notifier:
+                self.notifier.exit_stuck(pos["symbol"], pos["session_date"])
+
     def _exit(self, plan: TradePlan, price: float, reason: str, now: datetime) -> None:
         side = SELL if plan.direction == LONG else BUY
         fill = self.broker.place_market(plan.symbol, plan.qty, side, self.cfg.product)
-        exit_price = fill.price if fill and fill.status == "COMPLETE" else price
+        if fill is None or fill.status != "COMPLETE":
+            # The broker never confirmed the exit — the position (if any) is
+            # still open at the venue. Leave state untouched so the next tick's
+            # _manage() retries the exit instead of the bot believing it's flat
+            # while a real, unprotected position sits open.
+            attempt = state.record_exit_attempt(self.cfg.state_path)
+            journal.record(self.cfg.journal_dir, journal.EXIT_FAILED,
+                           {"symbol": plan.symbol, "reason": reason, "last_price": price,
+                            "attempt": attempt,
+                            "note": "broker did not confirm exit fill — retrying next tick"},
+                           when=now)
+            # Re-alert only every Nth attempt after the first — a persistently
+            # rejecting broker must not spam identical alerts every tick.
+            if self.notifier and (attempt == 1 or attempt % _EXIT_RETRY_ALERT_EVERY == 0):
+                self.notifier.exit_failed(plan.symbol, reason)
+            return
+
+        exit_price = fill.price
         pnl = realized_pnl(plan, exit_price)
         is_loss = pnl < 0
         state.close_position(self.cfg.state_path, result_date=now.date(), is_loss=is_loss)
         self._maybe_halt(now)
         journal.record(self.cfg.journal_dir, journal.EXIT,
                        {"symbol": plan.symbol, "reason": reason, "exit": exit_price,
-                        "pnl": pnl, "filled": bool(fill and fill.status == "COMPLETE")}, when=now)
+                        "pnl": pnl, "filled": True}, when=now)
         if self.notifier:
             self.notifier.exit(plan.symbol, reason, exit_price, pnl)
 

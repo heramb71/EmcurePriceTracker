@@ -13,7 +13,7 @@ from datetime import datetime
 import pytest
 
 from src.kittybot import journal, marketdata, state
-from src.kittybot.broker import BUY, Fill
+from src.kittybot.broker import BUY, SELL, Fill
 from src.kittybot.engine import KittyBotEngine
 from src.kittybot.filters import OpenQuote
 from src.kittybot.opening_range import OpeningRange
@@ -41,6 +41,20 @@ class FakeBroker:
         self.orders.append((symbol, qty, side))
         return Fill(order_id=f"FAKE-{self._seq}", side=side, qty=qty,
                     price=self.price, status="COMPLETE")
+
+
+class ExitFailsBroker(FakeBroker):
+    """Fills entries normally; exits fail while ``fail_exit`` is set (rejected/timed-out order)."""
+
+    def __init__(self, price: float):
+        super().__init__(price)
+        self.fail_exit = True
+
+    def place_market(self, symbol, qty, side, product):
+        if side == SELL and self.fail_exit:
+            self.orders.append((symbol, qty, side))
+            return None
+        return super().place_market(symbol, qty, side, product)
 
 
 class Tick:
@@ -162,3 +176,124 @@ def test_vix_spike_skips_the_day(wired, monkeypatch):
     assert state.get_position(cfg.state_path) is None
     assert "skip_day" in _events(cfg)
     assert broker.orders == []
+
+
+def test_no_breakout_by_cutoff_logs_and_alerts(wired):
+    """Survivors exist but nothing breaks the opening range — the cutoff must
+    be journaled and alerted, not silently swallowed."""
+    cfg, engine, broker, tick = wired
+    tick.value = (100.0, 500.0)  # inside the 95-105 range — no breakout
+
+    engine.step(TODAY.replace(hour=9, minute=15))    # prepare
+    engine.step(TODAY.replace(hour=9, minute=31))    # no breakout yet
+    assert "no_trigger" not in _events(cfg)          # too early to give up
+
+    engine.step(TODAY.replace(hour=10, minute=30))   # cutoff tick
+    events = _events(cfg)
+    assert "no_trigger" in events
+    assert state.get_position(cfg.state_path) is None
+    assert broker.orders == []
+
+    # A later breakout must not be chased once the day is latched shut.
+    tick.value = (106.0, 1500.0)
+    engine.step(TODAY.replace(hour=13, minute=0))
+    assert state.get_position(cfg.state_path) is None
+    assert broker.orders == []
+
+
+def test_multiple_late_breakouts_all_journaled(tmp_path, monkeypatch):
+    """When several survivors break out after cutoff, every symbol must be
+    logged — not just the strongest one that would have been picked."""
+    picks_path = tmp_path / "daily_picks.json"
+    picks_path.write_text(json.dumps({
+        "generated_at": TODAY.replace(hour=8, minute=45).isoformat(),
+        "picks": [
+            {"symbol": "AAA", "atr14_pct": 2.0, "long_room_2pct": 3.0, "short_room_2pct": 1.0,
+             "suggested_target_pct": 3.0, "suggested_stop_pct": 1.5, "prev_close": 100.0},
+            {"symbol": "BBB", "atr14_pct": 2.0, "long_room_2pct": 3.0, "short_room_2pct": 1.0,
+             "suggested_target_pct": 3.0, "suggested_stop_pct": 1.5, "prev_close": 100.0},
+        ],
+    }))
+    cfg = make_config(picks_path=str(picks_path), state_path=str(tmp_path / "state.json"),
+                      journal_dir=str(tmp_path / "journal"), max_picks=5)
+    quotes = {"AAA": OpenQuote(open=100.0, prev_close=100.0),
+             "BBB": OpenQuote(open=100.0, prev_close=100.0)}
+    monkeypatch.setattr(marketdata, "opening_quote", lambda s: quotes.get(s))
+    monkeypatch.setattr(marketdata, "india_vix", lambda: (11.0, 11.0))
+    monkeypatch.setattr(
+        marketdata, "opening_range",
+        lambda s, m: OpeningRange(high=105.0, low=95.0, volume=15000.0, avg_volume=1000.0),
+    )
+    monkeypatch.setattr(marketdata, "live_tick", lambda s: (106.0, 1500.0))  # both break out
+    broker = FakeBroker(price=106.0)
+    engine = KittyBotEngine(cfg, broker=broker)
+
+    engine.step(TODAY.replace(hour=9, minute=15))    # prepare
+    engine.step(TODAY.replace(hour=10, minute=30))   # first entry-check tick is already past cutoff
+
+    rows = journal.read_day(cfg.journal_dir, TODAY.date())
+    no_trigger = next(r for r in rows if r["event"] == "no_trigger")
+    assert "AAA" in no_trigger["note"] and "BBB" in no_trigger["note"]
+    assert state.get_position(cfg.state_path) is None
+    assert broker.orders == []
+
+
+def test_missing_picks_file_falls_back_instead_of_skipping(tmp_path, monkeypatch):
+    """A missing daily_picks.json must degrade to the fallback universe, not skip the day."""
+    cfg = make_config(
+        picks_path=str(tmp_path / "missing.json"),  # never written
+        state_path=str(tmp_path / "state.json"),
+        journal_dir=str(tmp_path / "journal"),
+        fallback_universe=("TATAMOTORS",),
+        max_picks=5,
+    )
+    quotes = {"TATAMOTORS": OpenQuote(open=100.0, prev_close=100.0)}
+    monkeypatch.setattr(marketdata, "opening_quote", lambda s: quotes.get(s))
+    monkeypatch.setattr(marketdata, "india_vix", lambda: (11.0, 11.0))
+    monkeypatch.setattr(
+        marketdata, "opening_range",
+        lambda s, m: OpeningRange(high=105.0, low=95.0, volume=15000.0, avg_volume=1000.0),
+    )
+    tick = Tick((106.0, 1500.0))
+    monkeypatch.setattr(marketdata, "live_tick", lambda s: tick.value)
+    broker = FakeBroker(price=106.0)
+    engine = KittyBotEngine(cfg, broker=broker)
+
+    engine.step(TODAY.replace(hour=9, minute=15))
+    rows = journal.read_day(cfg.journal_dir, TODAY.date())
+    assert "skip_day" not in [r["event"] for r in rows]
+    observe = next(r for r in rows if r["event"] == "observe")
+    assert observe["source"] == "fallback"
+    assert observe["survivors"] == ["TATAMOTORS"]
+
+    # The bot must actually trade the fallback universe, not just log it.
+    engine.step(TODAY.replace(hour=9, minute=31))
+    pos = state.get_position(cfg.state_path)
+    assert pos is not None
+    assert pos["symbol"] == "TATAMOTORS"
+
+
+def test_failed_exit_fill_keeps_position_open_for_retry(wired):
+    """If the broker never confirms an exit, the bot must not believe it's flat."""
+    cfg, _, _, tick = wired
+    broker = ExitFailsBroker(price=106.0)
+    engine = KittyBotEngine(cfg, broker=broker)
+
+    engine.step(TODAY.replace(hour=9, minute=15))
+    engine.step(TODAY.replace(hour=9, minute=31))     # entry fills fine
+    assert state.get_position(cfg.state_path) is not None
+
+    tick.value = (110.0, 1500.0)                      # price runs to target
+    engine.step(TODAY.replace(hour=12, minute=0))      # exit order never confirms
+
+    pos = state.get_position(cfg.state_path)
+    assert pos is not None and pos["symbol"] == "TATAMOTORS"
+    events = _events(cfg)
+    assert "exit_failed" in events
+    assert "exit" not in events
+
+    # Broker recovers on the next tick — the retried exit succeeds normally.
+    broker.fail_exit = False
+    engine.step(TODAY.replace(hour=12, minute=5))
+    assert state.get_position(cfg.state_path) is None
+    assert "exit" in _events(cfg)

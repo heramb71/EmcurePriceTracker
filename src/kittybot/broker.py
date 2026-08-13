@@ -140,7 +140,7 @@ class KiteBroker:
             logger.exception("kite place_market failed: %s %s x%d", side, symbol, qty)
             return None
         result = self._kite._await_fill(str(order_id), qty)
-        if result["status"] != "COMPLETE":
+        if result["status"] != "COMPLETE" or result.get("filled_qty", 0) < qty:
             return None
         return Fill(order_id=str(order_id), side=side, qty=result["filled_qty"],
                     price=result["fill_price"], status="COMPLETE")
