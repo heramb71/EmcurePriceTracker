@@ -6,6 +6,10 @@ unit-tests on synthetic data. ``apps.kitty_screener`` fetches the bars and write
 
 * :func:`directional_hit_rate` — % of recent sessions a 2% move was available
 * :func:`avg_range_pct`, :func:`atr_pct`, :func:`adtv_cr` — volatility / liquidity
+* :func:`market_adjusted_hit_rate` — hit-rate with Nifty's own move subtracted
+  first and recent days weighted more than old ones (candidate replacement for
+  ``either_hit_rate`` — see ``apps/kitty_score_backtest.py``, not yet wired into
+  :func:`screen_symbol`/production until backtested)
 * :func:`screen_symbol` — one symbol's :class:`ScreenMetrics` (or ``None``)
 * :func:`rank` / :func:`build_payload` — top-N selection + the JSON envelope
 
@@ -19,6 +23,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 from src.kittybot.config import KittyBotConfig
@@ -32,6 +37,7 @@ _ADTV_LOOKBACK = 20
 _MIN_TARGET_PCT = 2.0
 _MAX_TARGET_PCT = 5.0
 _TARGET_RANGE_FRACTION = 0.6  # aim for ~60% of the typical daily range as the target
+_RECENCY_HALFLIFE_DAYS = 20.0  # a day 20 sessions ago counts half as much as today
 
 
 @dataclass(frozen=True)
@@ -86,6 +92,63 @@ def either_hit_rate(df: pd.DataFrame, lookback: int,
     up = (tail["high"] - tail["open"]) / tail["open"] * 100.0 >= threshold_pct
     down = (tail["open"] - tail["low"]) / tail["open"] * 100.0 >= threshold_pct
     return round(float((up | down).mean()) * 100.0, 1)
+
+
+def market_adjusted_move(stock_daily: pd.DataFrame, nifty_daily: pd.DataFrame,
+                         side: str) -> pd.Series:
+    """Per-day % move with Nifty's same-day move subtracted, oldest-first.
+
+    ``side="long"`` measures high-vs-open; ``side="short"`` measures open-vs-low.
+    Aligns the two frames on ``date`` first, so only days both cover are counted.
+    Returns an empty Series when the frames share no dates.
+    """
+    merged = stock_daily[["date", "open", "high", "low"]].merge(
+        nifty_daily[["date", "open", "high", "low"]], on="date", suffixes=("", "_nifty"),
+    )
+    if merged.empty:
+        return pd.Series(dtype=float)
+    if side == "long":
+        stock_move = (merged["high"] - merged["open"]) / merged["open"] * 100.0
+        nifty_move = (merged["high_nifty"] - merged["open_nifty"]) / merged["open_nifty"] * 100.0
+    else:
+        stock_move = (merged["open"] - merged["low"]) / merged["open"] * 100.0
+        nifty_move = (merged["open_nifty"] - merged["low_nifty"]) / merged["open_nifty"] * 100.0
+    return (stock_move - nifty_move).reset_index(drop=True)
+
+
+def recency_weight(n: int, halflife_days: float = _RECENCY_HALFLIFE_DAYS) -> np.ndarray:
+    """Exponential-decay weights for ``n`` oldest-first rows.
+
+    The most recent row (index ``n-1``) always weighs 1.0; a row ``halflife_days``
+    sessions older weighs half that, decaying further the older it gets.
+    """
+    if n <= 0:
+        return np.array([])
+    age = np.arange(n - 1, -1, -1)
+    return 0.5 ** (age / halflife_days)
+
+
+def market_adjusted_hit_rate(
+    stock_daily: pd.DataFrame, nifty_daily: pd.DataFrame, lookback: int,
+    threshold_pct: float = _TARGET_FLOOR_PCT, halflife_days: float = _RECENCY_HALFLIFE_DAYS,
+) -> float:
+    """Like :func:`either_hit_rate`, but market-adjusted and recency-weighted.
+
+    Subtracts Nifty's own same-day move first (so a stock only gets credit for
+    moving on its own, not for riding a broad market rally/selloff), then weighs
+    recent hits more than old ones — a stock whose edge has gone cold gets a
+    lower score than the raw count alone would give it, and one that's newly
+    live gets more credit than its raw count alone would give it.
+    """
+    long_moved = market_adjusted_move(stock_daily, nifty_daily, "long")
+    if long_moved.empty:
+        return 0.0
+    short_moved = market_adjusted_move(stock_daily, nifty_daily, "short")
+    long_tail = long_moved.tail(lookback).reset_index(drop=True)
+    short_tail = short_moved.tail(lookback).reset_index(drop=True)
+    hit = ((long_tail >= threshold_pct) | (short_tail >= threshold_pct)).astype(float)
+    weights = recency_weight(len(hit), halflife_days)
+    return round(float(np.average(hit, weights=weights)) * 100.0, 1)
 
 
 def avg_range_pct(df: pd.DataFrame, lookback: int) -> float:

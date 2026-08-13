@@ -18,6 +18,17 @@ def _daily(n=80, open_=100.0, up_pct=0.0, down_pct=0.0, close=100.0, volume=5_00
     return pd.DataFrame(rows)
 
 
+def _days(specs, open_=100.0, volume=5_000_000):
+    """One row per ``(up_pct, down_pct)`` tuple, oldest-first, same date basis as `_daily`."""
+    rows = []
+    for i, (up_pct, down_pct) in enumerate(specs):
+        high = open_ * (1 + up_pct / 100.0)
+        low = open_ * (1 - down_pct / 100.0)
+        rows.append({"date": pd.Timestamp("2026-01-01") + pd.Timedelta(days=i),
+                     "open": open_, "high": high, "low": low, "close": open_, "volume": volume})
+    return pd.DataFrame(rows)
+
+
 # ── hit-rate / room ──────────────────────────────────────────────────────────
 def test_long_hit_rate_full_when_every_day_reaches_target():
     df = _daily(up_pct=3.0, down_pct=0.0)  # +3% high every day → 2% always available
@@ -38,6 +49,69 @@ def test_short_room_tracks_downside():
 def test_either_hit_rate_combines_sides():
     df = _daily(up_pct=0.0, down_pct=2.5)  # only downside reaches 2%
     assert screener.either_hit_rate(df, lookback=60) == 100.0
+
+
+# ── market-adjusted / recency-weighted hit rate ──────────────────────────────
+def test_market_adjusted_move_nets_out_flat_market():
+    stock = _daily(n=10, up_pct=3.0, down_pct=0.0)
+    nifty = _daily(n=10, up_pct=0.0, down_pct=0.0)  # market did nothing
+    adjusted = screener.market_adjusted_move(stock, nifty, "long")
+    assert (adjusted.round(2) == 3.0).all()
+
+
+def test_market_adjusted_move_nets_to_zero_when_stock_just_tracks_market():
+    stock = _daily(n=10, up_pct=3.0, down_pct=0.0)
+    nifty = _daily(n=10, up_pct=3.0, down_pct=0.0)  # market moved exactly as much
+    adjusted = screener.market_adjusted_move(stock, nifty, "long")
+    assert (adjusted.round(6) == 0.0).all()
+
+
+def test_market_adjusted_move_empty_when_no_overlapping_dates():
+    stock = _daily(n=5)
+    nifty = _daily(n=5)
+    nifty["date"] = nifty["date"] + pd.Timedelta(days=100)
+    assert screener.market_adjusted_move(stock, nifty, "long").empty
+
+
+def test_recency_weight_most_recent_is_always_one():
+    w = screener.recency_weight(10, halflife_days=5.0)
+    assert w[-1] == 1.0
+    assert w[0] < w[-1]
+
+
+def test_recency_weight_halves_at_halflife():
+    w = screener.recency_weight(21, halflife_days=20.0)
+    assert abs(w[0] - 0.5) < 1e-9  # the oldest row is exactly one halflife back
+
+
+def test_recency_weight_empty_for_zero_rows():
+    assert list(screener.recency_weight(0)) == []
+
+
+def test_market_adjusted_hit_rate_credits_only_independent_moves():
+    # Stock tracks the market exactly → zero independent move → 0% hit rate,
+    # even though raw (non-market-adjusted) either_hit_rate would say 100%.
+    stock = _daily(n=60, up_pct=3.0, down_pct=0.0)
+    nifty = _daily(n=60, up_pct=3.0, down_pct=0.0)
+    assert screener.either_hit_rate(stock, lookback=60) == 100.0
+    assert screener.market_adjusted_hit_rate(stock, nifty, lookback=60) == 0.0
+
+
+def test_market_adjusted_hit_rate_full_when_market_flat():
+    stock = _daily(n=60, up_pct=3.0, down_pct=0.0)
+    nifty = _daily(n=60, up_pct=0.0, down_pct=0.0)
+    assert screener.market_adjusted_hit_rate(stock, nifty, lookback=60) == 100.0
+
+
+def test_market_adjusted_hit_rate_weighs_recent_hits_more():
+    # Same raw count of independent-move days (30 out of 60) in both cases —
+    # only WHEN those hits happened differs.
+    stale = _days([(3.0, 0.0)] * 30 + [(0.0, 0.0)] * 30)   # hits in the old half
+    fresh = _days([(0.0, 0.0)] * 30 + [(3.0, 0.0)] * 30)   # hits in the recent half
+    flat_nifty = _daily(n=60, up_pct=0.0, down_pct=0.0)
+    stale_rate = screener.market_adjusted_hit_rate(stale, flat_nifty, lookback=60)
+    fresh_rate = screener.market_adjusted_hit_rate(fresh, flat_nifty, lookback=60)
+    assert fresh_rate > 50.0 > stale_rate
 
 
 # ── range / atr / liquidity ──────────────────────────────────────────────────
