@@ -32,6 +32,7 @@ STOP_MOVED = "stop_moved"
 EXIT = "exit"
 EXIT_FAILED = "exit_failed"
 ERROR = "error"
+HALT_SET = "halt_set"  # a safety rail just tripped — distinct from a routine SKIP_DAY
 
 
 def _path(journal_dir: str, day: date) -> str:

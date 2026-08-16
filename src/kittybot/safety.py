@@ -1,14 +1,23 @@
 """Circuit breakers that skip the whole day (spec: safety rails).
 
-Three independent guards, each a pure predicate so they test on synthetic inputs:
+Pure predicates so they test on synthetic inputs:
 
 * :func:`vix_spike`      — India VIX up more than N% intraday at select time
 * :func:`picks_stale`    — daily_picks.json older than the max age
-* :func:`loss_streak_halt` — halt after N consecutive losing days, resume next week
+* :func:`daily_loss_limit_breached` — today's realized loss hit N% of capital
+  (catches abnormal slippage/gap-through-stop, not a normal planned stop-out;
+  self-resolving — skips only the next trading day)
+* :func:`drawdown_breaker` — cumulative equity fell N% below its all-time high
+  (the real prop-firm-style circuit breaker; sticky, manual resume only)
+* :func:`loss_streak_halt` — legacy day-count halt (N consecutive losing days,
+  resume next week). Kept for backward compatibility but not wired by default
+  — domain research on prop-firm risk practice found no basis for a
+  day-count-based cooldown; see ``KittyBotConfig.enable_loss_streak_halt``.
 
-:func:`evaluate` bundles them into a decision the engine journals. The loss-streak
-"resume next week" boundary is computed by :func:`resume_date` (the Monday after
-the halt) so the stateful part stays a one-line date comparison in the engine.
+:func:`evaluate` bundles them into a decision the engine journals. Both new
+rails are live-mode-only by convention enforced in the engine, not here — paper
+mode still computes and journals them (diagnostic signal), it just never
+persists a blocking halt.
 """
 from __future__ import annotations
 
@@ -58,8 +67,34 @@ def picks_stale(generated_at: Optional[datetime], now: datetime, max_age_hours: 
     return (now - generated_at) > timedelta(hours=max_age_hours)
 
 
+def daily_loss_limit_breached(realized_pnl_today: float, capital: float, max_loss_pct: float) -> bool:
+    """True when today's realized loss reached ``max_loss_pct`` % of capital.
+
+    Deliberately set above the per-trade risk cap so it only fires on abnormal
+    slippage/gap-through-stop, not a normal planned stop-out. A winning or
+    scratch day never blocks.
+    """
+    if capital <= 0:
+        return False
+    return realized_pnl_today <= -(capital * max_loss_pct / 100.0)
+
+
+def drawdown_breaker(equity_high_water_mark: float, current_equity: float, max_drawdown_pct: float) -> bool:
+    """True when ``current_equity`` has fallen ``max_drawdown_pct`` % below its
+    all-time high — a capital-protection circuit breaker, not a per-day rail.
+    """
+    if equity_high_water_mark <= 0:
+        return False
+    dd_pct = (equity_high_water_mark - current_equity) / equity_high_water_mark * 100.0
+    return dd_pct >= max_drawdown_pct
+
+
 def loss_streak_halt(consecutive_losing_days: int, max_days: int) -> bool:
-    """True when the losing streak has reached the halt threshold."""
+    """True when the losing streak has reached the halt threshold.
+
+    Legacy day-count rail — see module docstring. Kept working and tested, but
+    not wired into :func:`evaluate` by default.
+    """
     return consecutive_losing_days >= max_days
 
 
@@ -87,8 +122,21 @@ def evaluate(
     now: datetime,
     picks_max_age_hours: float,
     halt_until: Optional[date],
+    drawdown_halted: bool = False,
 ) -> SafetyDecision:
-    """Combine all rails into one skip/trade decision with per-check detail."""
+    """Combine all rails into one skip/trade decision with per-check detail.
+
+    ``halt_until`` covers any self-resolving, dated halt (the daily-loss-limit
+    rail, or the legacy day-count rail if opted back in). ``drawdown_halted``
+    is the separate sticky circuit breaker with no auto-resume date.
+    """
+    dated_active = halt_active(halt_until, now.date())
+    if drawdown_halted:
+        halt_detail = "cumulative drawdown breaker tripped — manual resume required"
+    elif dated_active:
+        halt_detail = f"halted until {halt_until}"
+    else:
+        halt_detail = "no active halt"
     checks = (
         SafetyCheck(
             "India VIX spike",
@@ -103,9 +151,9 @@ def evaluate(
              f"max age {picks_max_age_hours}h"),
         ),
         SafetyCheck(
-            "Loss-streak halt",
-            halt_active(halt_until, now.date()),
-            (f"halted until {halt_until}" if halt_until else "no active halt"),
+            "Halt",
+            dated_active or drawdown_halted,
+            halt_detail,
         ),
     )
     return SafetyDecision(skip_day=any(c.blocked for c in checks), checks=checks)

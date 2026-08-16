@@ -5,9 +5,16 @@ One small JSON file (default ``kittybot_state.json``, gitignored) holds:
 * ``position``       — the open :class:`~src.kittybot.risk.TradePlan` (+ratcheted
                        stop, entry order id, session date), or ``None``
 * ``session_date``   — the date the current position/decisions belong to
-* ``loss_streak``    — consecutive losing days
+* ``loss_streak``    — consecutive losing days (legacy day-count halt input)
 * ``last_result_date`` — the last date a result was recorded (streak de-dup)
-* ``halt_until``     — ISO date the loss-streak halt lifts, or ``None``
+* ``halt_until``     — ISO date a dated halt (daily-loss-limit or legacy
+                       loss-streak) lifts, or ``None``
+* ``realized_pnl_today`` — today's realized P&L, resets on date rollover
+* ``pnl_day``        — ISO date ``realized_pnl_today`` belongs to
+* ``cumulative_realized_pnl`` — all-time realized P&L since inception
+* ``equity_high_water_mark`` — the highest ``capital + cumulative_realized_pnl``
+                       ever observed, input to the drawdown breaker
+* ``drawdown_halted`` — sticky circuit breaker, ``True`` until manually cleared
 
 All writes go through :mod:`src.shared.atomic_json` (temp+fsync+replace, plus a
 flock) so a mid-write crash can never truncate the file and strand a live
@@ -32,6 +39,11 @@ _EMPTY: dict = {
     "loss_streak": 0,
     "last_result_date": None,
     "halt_until": None,
+    "realized_pnl_today": 0.0,
+    "pnl_day": None,
+    "cumulative_realized_pnl": 0.0,
+    "equity_high_water_mark": 0.0,
+    "drawdown_halted": False,
 }
 
 
@@ -138,3 +150,35 @@ def parse_halt_until(state: dict) -> Optional[date]:
     except ValueError:
         logger.warning("state: bad halt_until %r", raw)
         return None
+
+
+def record_realized_pnl(path: str, *, pnl: float, today: date, capital: float) -> tuple[float, float]:
+    """Fold a closed trade's P&L into today's tally and the all-time equity
+    high-water mark, resetting the daily tally on a date rollover.
+
+    Returns ``(realized_pnl_today, equity_high_water_mark)`` — the inputs the
+    daily-loss-limit and drawdown-breaker safety rails need.
+    """
+    with transaction(path) as state:
+        if state.get("pnl_day") != today.isoformat():
+            state["realized_pnl_today"] = 0.0
+            state["pnl_day"] = today.isoformat()
+        state["realized_pnl_today"] = round(state.get("realized_pnl_today", 0.0) + pnl, 2)
+        state["cumulative_realized_pnl"] = round(state.get("cumulative_realized_pnl", 0.0) + pnl, 2)
+        equity = capital + state["cumulative_realized_pnl"]
+        # The HWM can never be below `capital` itself — that's day-one equity,
+        # before any trade, and always a valid "high" to measure drawdown from.
+        state["equity_high_water_mark"] = max(state.get("equity_high_water_mark", 0.0), capital, equity)
+        return state["realized_pnl_today"], state["equity_high_water_mark"]
+
+
+def set_drawdown_halt(path: str, halted: bool) -> None:
+    """Set (or clear) the sticky drawdown circuit breaker — manual resume only,
+    no auto-resume date."""
+    with transaction(path) as state:
+        state["drawdown_halted"] = halted
+
+
+def is_drawdown_halted(state: dict) -> bool:
+    """True when the drawdown circuit breaker is tripped, from a loaded state dict."""
+    return bool(state.get("drawdown_halted", False))

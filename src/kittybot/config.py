@@ -97,7 +97,13 @@ class KittyBotConfig:
 
     # ── safety rails ──────────────────────────────────────────────────────────
     vix_spike_pct: float = 15.0        # skip day if India VIX up > this % at select
-    max_consecutive_losing_days: int = 3  # then halt, resume next week
+    daily_loss_limit_pct: float = 3.0  # skip next day if today's loss hits this % of capital
+                                        # (catches abnormal slippage, not a normal stop-out)
+    max_drawdown_pct: float = 10.0     # sticky halt if cumulative equity falls this % below
+                                        # its all-time high (manual resume only)
+    enable_loss_streak_halt: bool = False  # legacy day-count halt, off by default — see
+                                        # safety.py module docstring for why
+    max_consecutive_losing_days: int = 3  # legacy: halt after N losing days, resume next week
 
     # ── execution ─────────────────────────────────────────────────────────────
     broker: str = "paper"              # paper | kite | upstox

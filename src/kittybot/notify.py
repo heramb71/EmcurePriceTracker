@@ -73,6 +73,13 @@ def format_skip(reasons: list[str], live: bool) -> str:
     return "\n".join(["🚫 *KittyBot — no trade today*", "", body, "", _foot(live)])
 
 
+def format_halt(detail: str, live: bool, *, blocking: bool) -> str:
+    """A safety rail just tripped — sent immediately, not just implied by the
+    next day's generic skip message."""
+    verb = "HALTED" if blocking else "would HALT (paper mode — continuing to trade)"
+    return "\n".join([f"🛑 *KittyBot — {verb}*", "", detail, "", _foot(live)])
+
+
 def format_entry(plan: TradePlan, fill_price: float, live: bool) -> str:
     arrow = "🟢 LONG" if plan.direction == "LONG" else "🔴 SHORT"
     return "\n".join([
@@ -153,6 +160,9 @@ class KittyNotifier:
 
     def skip(self, reasons: list[str]) -> None:
         self._send(format_skip(reasons, self.live))
+
+    def halt(self, detail: str, *, blocking: bool) -> None:
+        self._send(format_halt(detail, self.live, blocking=blocking))
 
     def entry(self, plan: TradePlan, fill_price: float) -> None:
         self._send(format_entry(plan, fill_price, self.live))

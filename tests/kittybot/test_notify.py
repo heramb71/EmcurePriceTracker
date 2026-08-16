@@ -74,6 +74,18 @@ def test_skip_message_lists_reasons():
     assert "VIX" in msg
 
 
+def test_halt_message_blocking_says_halted():
+    msg = notify.format_halt("daily loss limit 3.0% breached", live=True, blocking=True)
+    assert "HALTED" in msg
+    assert "daily loss limit" in msg
+
+
+def test_halt_message_paper_mode_says_would_halt_and_continues():
+    msg = notify.format_halt("cumulative drawdown breaker tripped", live=False, blocking=False)
+    assert "would HALT" in msg
+    assert "continuing to trade" in msg
+
+
 def test_breakeven_message():
     assert "breakeven" in notify.format_breakeven("X", 100.0, live=False).lower()
 
@@ -107,6 +119,7 @@ class SpyNotifier:
 
     def daily_plan(self, survivors, source): self.calls.append(("daily_plan", len(survivors)))
     def skip(self, reasons): self.calls.append(("skip", tuple(reasons)))
+    def halt(self, detail, *, blocking): self.calls.append(("halt", detail, blocking))
     def entry(self, plan, fill): self.calls.append(("entry", plan.symbol))
     def breakeven(self, symbol, stop): self.calls.append(("breakeven", symbol))
     def exit(self, symbol, reason, price, pnl): self.calls.append(("exit", symbol, reason))

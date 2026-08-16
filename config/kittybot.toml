@@ -58,7 +58,18 @@ hard_exit = "15:10"         # force-close any open position at/after this time
 
 [safety]
 vix_spike_pct = 15.0        # skip the day if India VIX is up > this % at select_time
-max_consecutive_losing_days = 3   # after this many, halt and resume next week
+# Two capital-based rails, live-mode-only (paper mode journals+notifies but
+# never halts — losses in paper are diagnostic signal, not capital risk).
+daily_loss_limit_pct = 3.0  # skip next day if today's realized loss hits this % of
+                             # capital — deliberately above risk_per_trade_pct so it
+                             # only fires on abnormal slippage, not a normal stop-out
+max_drawdown_pct = 10.0     # sticky halt (manual resume only) if cumulative equity
+                             # falls this % below its all-time high
+# Legacy day-count halt — off by default. Domain research on prop-firm risk
+# practice found no basis for a day-count cooldown (see safety.py docstring);
+# kept available to opt back into if ever wanted.
+enable_loss_streak_halt = false
+max_consecutive_losing_days = 3   # only used if enable_loss_streak_halt = true
 
 [execution]
 broker = "paper"            # paper | kite | upstox

@@ -17,7 +17,7 @@ sequences them and performs I/O.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from src.kittybot import journal, marketdata, safety, state
 from src.kittybot.broker import BUY, SELL, Broker, make_broker
@@ -97,11 +97,13 @@ class KittyBotEngine:
                         "live": self.cfg.sends_real_orders}, when=now)
 
         kitty = load_kitty(self.cfg)
-        halt_until = state.parse_halt_until(state.load(self.cfg.state_path))
+        st = state.load(self.cfg.state_path)
+        halt_until = state.parse_halt_until(st)
         decision = safety.evaluate(
             vix_now=None, vix_prev_close=None, vix_spike_pct=self.cfg.vix_spike_pct,
             generated_at=kitty.generated_at, now=now,
             picks_max_age_hours=self.cfg.picks_max_age_hours, halt_until=halt_until,
+            drawdown_halted=state.is_drawdown_halted(st),
         )
         # VIX is checked separately at select time. A fallback kitty (missing/
         # unreadable/empty daily_picks.json) has no generated_at by construction,
@@ -295,18 +297,63 @@ class KittyBotEngine:
         pnl = realized_pnl(plan, exit_price)
         is_loss = pnl < 0
         state.close_position(self.cfg.state_path, result_date=now.date(), is_loss=is_loss)
-        self._maybe_halt(now)
+        realized_today, equity_hwm = state.record_realized_pnl(
+            self.cfg.state_path, pnl=pnl, today=now.date(), capital=self.cfg.capital)
+        self._maybe_halt(now, realized_today, equity_hwm)
         journal.record(self.cfg.journal_dir, journal.EXIT,
                        {"symbol": plan.symbol, "reason": reason, "exit": exit_price,
                         "pnl": pnl, "filled": True}, when=now)
         if self.notifier:
             self.notifier.exit(plan.symbol, reason, exit_price, pnl)
 
-    def _maybe_halt(self, now: datetime) -> None:
+    def _trip_halt(self, rail: str, detail: str, *, resume_date: date | None,
+                   sticky: bool, now: datetime, live: bool) -> None:
+        """Persist a halt (live only) and always journal + alert immediately —
+        paper mode still surfaces the signal, it just keeps trading through it.
+        """
+        if live:
+            if sticky:
+                state.set_drawdown_halt(self.cfg.state_path, True)
+            else:
+                state.set_halt(self.cfg.state_path, resume_date)
+        journal.record(self.cfg.journal_dir, journal.HALT_SET,
+                       {"rail": rail, "detail": detail, "live": live}, when=now)
+        if self.notifier:
+            self.notifier.halt(detail, blocking=live)
+
+    def _maybe_halt(self, now: datetime, realized_pnl_today: float, equity_high_water_mark: float) -> None:
+        """Evaluate the safety rails after a closed trade. Both new rails are
+        live-mode-only in effect (see :meth:`_trip_halt`) — paper mode always
+        computes and journals+alerts them, so a losing streak stays visible as
+        diagnostic signal instead of silently halting.
+        """
+        live = self.cfg.sends_real_orders
         st = state.load(self.cfg.state_path)
-        if safety.loss_streak_halt(st.get("loss_streak", 0), self.cfg.max_consecutive_losing_days):
+        current_equity = self.cfg.capital + st.get("cumulative_realized_pnl", 0.0)
+
+        if safety.drawdown_breaker(equity_high_water_mark, current_equity, self.cfg.max_drawdown_pct):
+            dd_pct = (equity_high_water_mark - current_equity) / equity_high_water_mark * 100.0
+            detail = (f"cumulative equity ₹{current_equity:,.0f} is {dd_pct:.1f}% below its "
+                      f"high-water mark ₹{equity_high_water_mark:,.0f} "
+                      f"(≥{self.cfg.max_drawdown_pct:.0f}% trips this breaker) — "
+                      "sticky halt, manual resume required")
+            self._trip_halt("drawdown_breaker", detail, resume_date=None, sticky=True,
+                            now=now, live=live)
+            return  # the bigger circuit breaker already fired; no need to also check smaller ones
+
+        if safety.daily_loss_limit_breached(realized_pnl_today, self.cfg.capital,
+                                            self.cfg.daily_loss_limit_pct):
+            resume = now.date() + timedelta(days=1)
+            detail = (f"today's realized loss ₹{realized_pnl_today:,.0f} hit "
+                      f"{self.cfg.daily_loss_limit_pct:.0f}% of capital (abnormal slippage check, "
+                      f"not a normal stop-out) — skipping through {resume}")
+            self._trip_halt("daily_loss_limit", detail, resume_date=resume, sticky=False,
+                            now=now, live=live)
+            return
+
+        if self.cfg.enable_loss_streak_halt and safety.loss_streak_halt(
+                st.get("loss_streak", 0), self.cfg.max_consecutive_losing_days):
             resume = safety.resume_date(now.date())
-            state.set_halt(self.cfg.state_path, resume)
-            journal.record(self.cfg.journal_dir, journal.SKIP_DAY,
-                           {"reasons": [f"loss streak {st['loss_streak']} — halted until {resume}"]},
-                           when=now)
+            detail = f"loss streak {st['loss_streak']} — halted until {resume}"
+            self._trip_halt("loss_streak", detail, resume_date=resume, sticky=False,
+                            now=now, live=live)

@@ -8,7 +8,7 @@ test is deterministic and offline.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -297,3 +297,96 @@ def test_failed_exit_fill_keeps_position_open_for_retry(wired):
     engine.step(TODAY.replace(hour=12, minute=5))
     assert state.get_position(cfg.state_path) is None
     assert "exit" in _events(cfg)
+
+
+# ── halt redesign: daily loss limit / drawdown breaker / paper-vs-live ───────
+
+class HaltSpyNotifier:
+    def __init__(self):
+        self.calls = []
+
+    def halt(self, detail, *, blocking):
+        self.calls.append((detail, blocking))
+
+
+def test_daily_loss_limit_breach_halts_only_the_next_day_in_live_mode(tmp_path):
+    cfg = make_config(state_path=str(tmp_path / "state.json"),
+                      journal_dir=str(tmp_path / "journal"),
+                      capital=100_000.0, daily_loss_limit_pct=3.0,
+                      live=True, broker="kite")
+    spy = HaltSpyNotifier()
+    engine = KittyBotEngine(cfg, broker=FakeBroker(price=100.0), notifier=spy)
+
+    realized_today, equity_hwm = state.record_realized_pnl(
+        cfg.state_path, pnl=-3500.0, today=TODAY.date(), capital=cfg.capital)  # 3.5% > 3.0%
+    engine._maybe_halt(TODAY, realized_today, equity_hwm)
+
+    assert state.parse_halt_until(state.load(cfg.state_path)) == TODAY.date() + timedelta(days=1)
+    assert state.is_drawdown_halted(state.load(cfg.state_path)) is False
+    assert spy.calls and spy.calls[0][1] is True  # blocking
+    halt_events = [e for e in journal.read_day(cfg.journal_dir, TODAY.date()) if e["event"] == "halt_set"]
+    assert halt_events and halt_events[0]["rail"] == "daily_loss_limit"
+
+
+def test_drawdown_breach_sets_sticky_halt_in_live_mode(tmp_path):
+    cfg = make_config(state_path=str(tmp_path / "state.json"),
+                      journal_dir=str(tmp_path / "journal"),
+                      capital=100_000.0, max_drawdown_pct=10.0,
+                      live=True, broker="kite")
+    spy = HaltSpyNotifier()
+    engine = KittyBotEngine(cfg, broker=FakeBroker(price=100.0), notifier=spy)
+
+    # Day 1: a win lifts the high-water mark to 105,000.
+    state.record_realized_pnl(cfg.state_path, pnl=5000.0, today=TODAY.date(), capital=cfg.capital)
+    # Day 2: a big loss drags equity to 90,000 — ~14.3% below the 105,000 HWM.
+    next_day = TODAY + timedelta(days=1)
+    realized_today, equity_hwm = state.record_realized_pnl(
+        cfg.state_path, pnl=-15_000.0, today=next_day.date(), capital=cfg.capital)
+    engine._maybe_halt(next_day, realized_today, equity_hwm)
+
+    assert state.is_drawdown_halted(state.load(cfg.state_path)) is True
+    assert state.parse_halt_until(state.load(cfg.state_path)) is None  # sticky, not dated
+    assert spy.calls and spy.calls[0][1] is True
+    halt_events = [e for e in journal.read_day(cfg.journal_dir, next_day.date()) if e["event"] == "halt_set"]
+    assert halt_events and halt_events[0]["rail"] == "drawdown_breaker"
+
+
+def test_paper_mode_never_persists_a_halt_but_still_journals_and_notifies(tmp_path):
+    cfg = make_config(state_path=str(tmp_path / "state.json"),
+                      journal_dir=str(tmp_path / "journal"),
+                      capital=100_000.0, daily_loss_limit_pct=3.0)  # live defaults False
+    assert cfg.sends_real_orders is False
+    spy = HaltSpyNotifier()
+    engine = KittyBotEngine(cfg, broker=FakeBroker(price=100.0), notifier=spy)
+
+    realized_today, equity_hwm = state.record_realized_pnl(
+        cfg.state_path, pnl=-5000.0, today=TODAY.date(), capital=cfg.capital)  # 5% > 3.0%
+    engine._maybe_halt(TODAY, realized_today, equity_hwm)
+
+    # The rail fires (journal + alert) but never blocks paper trading.
+    assert state.parse_halt_until(state.load(cfg.state_path)) is None
+    assert state.is_drawdown_halted(state.load(cfg.state_path)) is False
+    assert spy.calls and spy.calls[0][1] is False  # blocking=False
+    halt_events = [e for e in journal.read_day(cfg.journal_dir, TODAY.date()) if e["event"] == "halt_set"]
+    assert halt_events and halt_events[0]["live"] is False
+
+
+def test_legacy_loss_streak_halt_is_off_by_default(tmp_path):
+    cfg = make_config(state_path=str(tmp_path / "state.json"),
+                      journal_dir=str(tmp_path / "journal"),
+                      capital=100_000.0, daily_loss_limit_pct=99.0, max_drawdown_pct=99.0,
+                      live=True, broker="kite")  # rails 1/2 disabled via huge thresholds
+    assert cfg.enable_loss_streak_halt is False
+    spy = HaltSpyNotifier()
+    engine = KittyBotEngine(cfg, broker=FakeBroker(price=100.0), notifier=spy)
+
+    for i in range(cfg.max_consecutive_losing_days):
+        day = TODAY + timedelta(days=i)
+        state.close_position(cfg.state_path, result_date=day.date(), is_loss=True)
+    realized_today, equity_hwm = state.record_realized_pnl(
+        cfg.state_path, pnl=-10.0, today=TODAY.date(), capital=cfg.capital)
+    engine._maybe_halt(TODAY, realized_today, equity_hwm)
+
+    assert state.load(cfg.state_path)["loss_streak"] == cfg.max_consecutive_losing_days
+    assert state.parse_halt_until(state.load(cfg.state_path)) is None
+    assert spy.calls == []
