@@ -14,6 +14,7 @@ strictly before T, so there is no lookahead.
 
 Usage:  python -m apps.kitty_score_backtest
         python -m apps.kitty_score_backtest --symbols TATAMOTORS,VEDL --days 400
+        python -m apps.kitty_score_backtest --monte-carlo
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ import sys
 
 import pandas as pd
 
-from src.kittybot import screener
+from src.kittybot import montecarlo, screener
 from src.kittybot.config import KittyBotConfig
 from src.radar.features import fetch_index_daily
 from src.shared.data import fetch_daily
@@ -77,13 +78,20 @@ def _pct(hits: int, total: int) -> float:
     return round(hits / total * 100.0, 1) if total else 0.0
 
 
-def _summarize(label: str, rows: list[tuple]) -> None:
+def _stats(rows: list[tuple]) -> dict:
+    """Old-vs-new hit-rate stats for one slice of walked decision rows."""
     old_hits = sum(1 for r in rows if r[2])
     old_total = sum(1 for r in rows if r[2] is not None)
     new_hits = sum(1 for r in rows if r[4])
     new_total = sum(1 for r in rows if r[4] is not None)
-    print(f"{label:<26}current {_pct(old_hits, old_total):>5.1f}% (n={old_total:<4})  "
-          f"vs  new {_pct(new_hits, new_total):>5.1f}% (n={new_total})")
+    return {"old_hit_pct": _pct(old_hits, old_total), "old_n": old_total,
+            "new_hit_pct": _pct(new_hits, new_total), "new_n": new_total}
+
+
+def _summarize(label: str, rows: list[tuple]) -> None:
+    s = _stats(rows)
+    print(f"{label:<26}current {s['old_hit_pct']:>5.1f}% (n={s['old_n']:<4})  "
+          f"vs  new {s['new_hit_pct']:>5.1f}% (n={s['new_n']})")
 
 
 def run(symbols: list[str], days: int, warmup: int = 120) -> dict:
@@ -118,12 +126,42 @@ def run(symbols: list[str], days: int, warmup: int = 120) -> dict:
     _summarize("In-sample (1st half):", rows[:mid])
     _summarize("Out-of-sample (2nd half):", rows[mid:])
 
-    old_hits = sum(1 for r in rows if r[2])
-    old_total = sum(1 for r in rows if r[2] is not None)
-    new_hits = sum(1 for r in rows if r[4])
-    new_total = sum(1 for r in rows if r[4] is not None)
-    return {"old_hit_pct": _pct(old_hits, old_total), "old_n": old_total,
-            "new_hit_pct": _pct(new_hits, new_total), "new_n": new_total}
+    return {
+        "full": _stats(rows),
+        "in_sample": _stats(rows[:mid]),
+        "out_of_sample": _stats(rows[mid:]),
+        "out_sample_old_hits": [bool(r[2]) for r in rows[mid:] if r[2] is not None],
+        "out_sample_new_hits": [bool(r[4]) for r in rows[mid:] if r[4] is not None],
+    }
+
+
+def _print_monte_carlo(label: str, result: montecarlo.MonteCarloResult) -> None:
+    print(f"  {label}: 10th/50th/90th pctile return "
+          f"{result.pctile_10_return_pct:+.1f}% / {result.pctile_50_return_pct:+.1f}% / "
+          f"{result.pctile_90_return_pct:+.1f}%  |  median/90th-pctile drawdown "
+          f"{result.median_max_drawdown_pct:.1f}% / {result.pctile_90_max_drawdown_pct:.1f}%")
+    print(f"    {result.verdict}")
+
+
+def _run_monte_carlo(result: dict, n_paths: int, ruin_threshold_pct: float) -> None:
+    """Resample both formulas' out-of-sample outcomes into equity-curve risk
+    stats — the distribution-of-outcomes check an average-case-only backtest
+    comparison can't answer on its own. Proxy stats, not a real trade replay —
+    see src.kittybot.montecarlo's module docstring."""
+    old_hits = result.get("out_sample_old_hits") or []
+    new_hits = result.get("out_sample_new_hits") or []
+    if not old_hits or not new_hits:
+        print("\nMonte Carlo: skipped (not enough out-of-sample decision days).")
+        return
+    print(f"\nMonte Carlo ({n_paths} paths, ruin = equity below "
+          f"{ruin_threshold_pct:.0f}% of start) — proxy stats from configured R-multiples, "
+          "not a real trade replay:")
+    _print_monte_carlo("current score()",
+                       montecarlo.summarize(old_hits, n_paths=n_paths,
+                                            ruin_threshold_pct=ruin_threshold_pct, seed=0))
+    _print_monte_carlo("market-adjusted score()",
+                       montecarlo.summarize(new_hits, n_paths=n_paths,
+                                            ruin_threshold_pct=ruin_threshold_pct, seed=0))
 
 
 def main() -> int:
@@ -134,11 +172,19 @@ def main() -> int:
     parser.add_argument("--days", type=int, default=500, help="daily history depth to fetch")
     parser.add_argument("--warmup", type=int, default=120,
                         help="trailing days required before the first decision")
+    parser.add_argument("--monte-carlo", action="store_true",
+                        help="resample out-of-sample outcomes into equity-curve risk stats")
+    parser.add_argument("--mc-paths", type=int, default=5000,
+                        help="number of Monte Carlo paths to resample")
+    parser.add_argument("--ruin-threshold-pct", type=float, default=50.0,
+                        help="equity %% of starting capital counted as ruin")
     args = parser.parse_args()
 
     symbols = (args.symbols.split(",") if args.symbols
               else list(KittyBotConfig().fallback_universe))
-    run(symbols, args.days, args.warmup)
+    result = run(symbols, args.days, args.warmup)
+    if args.monte_carlo and result:
+        _run_monte_carlo(result, args.mc_paths, args.ruin_threshold_pct)
     return 0
 
 
