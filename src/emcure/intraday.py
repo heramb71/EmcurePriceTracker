@@ -8,7 +8,7 @@ Intraday strategy engine — aligned with the user's trading rules:
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from datetime import time as time_type
 from typing import Optional
 
@@ -36,6 +36,26 @@ _CONSISTENCY    = 0.571  # >= 4 out of 6 day-pairs must move in same direction
 # ─────────────────────────────────────────────────────────────────────────────
 # 7-day SMA gap
 # ─────────────────────────────────────────────────────────────────────────────
+
+def exclude_incomplete_today(df: pd.DataFrame, today: date) -> pd.DataFrame:
+    """Drop an in-progress "today" row before computing trailing-window signals
+    (SMA7 gap, 7-day trend).
+
+    yfinance's daily bar for the current session updates live once the market
+    has opened — it holds real OHLC, not the pre-market NaN placeholder that
+    fetch_daily already drops — so it survives into df untouched. Averaging it
+    into the SMA7 window compares today's price against an average that
+    already contains today's own still-moving price, which self-dampens the
+    mean-reversion gap (live incident 2026-08-17: EMCURE closed far below its
+    prior-week average — deep in buy territory — but the managed cycle's gap
+    never crossed the reentry threshold because "today" was diluting its own
+    comparison point all session). `run_backtest` validates strictly against
+    `df.iloc[:i]` — prior CLOSED days only — so live must match that, the same
+    way the pivot calc already reaches for `df_daily.iloc[-2]` as "yesterday"."""
+    if len(df) > 1 and pd.Timestamp(df["date"].iloc[-1]).date() == today:
+        return df.iloc[:-1].reset_index(drop=True)
+    return df
+
 
 def compute_sma7(df: pd.DataFrame) -> float:
     """Simple average of the last 7 closing prices."""

@@ -57,6 +57,7 @@ from src.emcure.intraday import (
     compute_orb,
     compute_sma7_gap,
     entry_signal,
+    exclude_incomplete_today,
     rupee_targets,
     time_exit_action,
 )
@@ -249,6 +250,11 @@ def _refresh(ticker: str, news_snapshot: dict | None = None, broker=None) -> dic
     if df_daily is None or df_daily.empty:
         return {}
 
+    # SMA7 gap / 7D trend must compare price against prior CLOSED days only —
+    # matching run_backtest's df.iloc[:i] — not a window that self-includes
+    # today's still-moving live bar (see exclude_incomplete_today docstring).
+    df_daily_closed = exclude_incomplete_today(df_daily, datetime.now(_IST).date())
+
     df_intraday = fetch_intraday(ticker, days=20)
 
     # Prefer live quote (fresher price during market hours); fall back to daily
@@ -399,17 +405,17 @@ def _refresh(ticker: str, news_snapshot: dict | None = None, broker=None) -> dic
     # Supertrend path is skipped entirely and the managed-cycle owns execution.
     mc_cfg = ManagedConfig.from_env()
     if mc_cfg.enabled:
-        _mc_s7 = compute_sma7_gap(quote["price"], df_daily)
+        _mc_s7 = compute_sma7_gap(quote["price"], df_daily_closed)
         mc_market = {
             "price":    quote["price"],
             "day_high": float(quote.get("high") or quote["price"]),
             "day_low":  float(quote.get("low")  or quote["price"]),
             "gap":      _mc_s7["gap"],
             "sma7":     _mc_s7["sma7"],
-            "trend_7d": classify_7d_trend(df_daily),
+            "trend_7d": classify_7d_trend(df_daily_closed),
             # Only consumed by MANAGED_REGIME_FILTER=stabilization (see
             # _regime_permits_reversion) — inert otherwise.
-            "recent_closes": df_daily["close"].tail(2).tolist(),
+            "recent_closes": df_daily_closed["close"].tail(2).tolist(),
         }
         # Execute the cycle ONLY during live market hours. _refresh() is also
         # called from the pre-open briefing and the post-close summary for data;
@@ -441,8 +447,8 @@ def _refresh(ticker: str, news_snapshot: dict | None = None, broker=None) -> dic
 
     # ──────── Intraday strategy signals (SMA7 gap + trend + ORB) ────────────
     price       = quote["price"]
-    sma7_gap    = compute_sma7_gap(price, df_daily)
-    trend_7d    = classify_7d_trend(df_daily)
+    sma7_gap    = compute_sma7_gap(price, df_daily_closed)
+    trend_7d    = classify_7d_trend(df_daily_closed)
     orb         = compute_orb(df_intraday)
     intra_sig   = entry_signal(price, sma7_gap, trend_7d, orb)
     rupee_lvls  = (
