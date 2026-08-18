@@ -253,7 +253,7 @@ def _refresh(ticker: str, news_snapshot: dict | None = None, broker=None) -> dic
     # SMA7 gap / 7D trend must compare price against prior CLOSED days only —
     # matching run_backtest's df.iloc[:i] — not a window that self-includes
     # today's still-moving live bar (see exclude_incomplete_today docstring).
-    df_daily_closed = exclude_incomplete_today(df_daily, datetime.now(_IST).date())
+    df_daily_closed = exclude_incomplete_today(df_daily, datetime.now(_IST))
 
     df_intraday = fetch_intraday(ticker, days=20)
 
