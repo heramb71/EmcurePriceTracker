@@ -107,7 +107,13 @@ from src.notify.alerts import (
     send_whatsapp_alert,
     should_alert,
 )
-from src.shared.data import fetch_daily, fetch_intraday, fetch_live_quote, get_latest_quote
+from src.shared.data import (
+    fetch_daily,
+    fetch_intraday,
+    fetch_live_quote,
+    get_latest_quote,
+    previous_session_row,
+)
 from src.shared.holidays import format_holiday_alert, is_market_holiday
 from src.shared.indicators import (
     compute_atr,
@@ -299,8 +305,9 @@ def _refresh(ticker: str, news_snapshot: dict | None = None, broker=None) -> dic
         "avg_volume": avg_volume,
     }
 
-    # Pivots — use previous day's OHLC
-    prev = df_daily.iloc[-2] if len(df_daily) > 1 else df_daily.iloc[-1]
+    # Pivots — use previous day's OHLC (robust to whether today's row has
+    # appeared in df_daily yet — see previous_session_row).
+    prev = previous_session_row(df_daily, datetime.now(_IST).date())
     pivots = classic_pivots(
         float(prev["high"]), float(prev["low"]), float(prev["close"])
     )
