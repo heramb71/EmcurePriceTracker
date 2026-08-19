@@ -15,6 +15,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from src.emcure.schedule import is_market_open
+
 try:
     import pytz
     IST = pytz.timezone("Asia/Kolkata")
@@ -36,6 +38,33 @@ _CONSISTENCY    = 0.571  # >= 4 out of 6 day-pairs must move in same direction
 # ─────────────────────────────────────────────────────────────────────────────
 # 7-day SMA gap
 # ─────────────────────────────────────────────────────────────────────────────
+
+def exclude_incomplete_today(df: pd.DataFrame, now: datetime) -> pd.DataFrame:
+    """Drop today's daily row while it is still IN PROGRESS, before computing
+    trailing-window signals (SMA7 gap, 7-day trend).
+
+    yfinance's daily bar for the current session updates live once the market
+    has opened — it holds real OHLC, not the pre-market NaN placeholder that
+    fetch_daily already drops — so it survives into df untouched. Averaging it
+    into the SMA7 window compares today's price against an average that
+    already contains today's own still-moving price, which self-dampens the
+    mean-reversion gap (live incident 2026-08-17: EMCURE closed far below its
+    prior-week average — deep in buy territory — but the managed cycle's gap
+    never crossed the reentry threshold because "today" was diluting its own
+    comparison point all session). `run_backtest` validates strictly against
+    `df.iloc[:i]` — prior CLOSED days only — so live must match that, the same
+    way the pivot calc already reaches for `df_daily.iloc[-2]` as "yesterday".
+
+    Gated on market-open, not just the calendar date: once the 15:30 close has
+    passed, today's bar IS a prior closed day (the same one classify_7d_trend
+    should see for the EOD summary's forward-looking "tomorrow" preview) and
+    must stay in the window — excluding it unconditionally by date alone
+    would make the EOD's own reentry price stale by a full session."""
+    if (len(df) > 1 and is_market_open(now)
+            and pd.Timestamp(df["date"].iloc[-1]).date() == now.date()):
+        return df.iloc[:-1].reset_index(drop=True)
+    return df
+
 
 def compute_sma7(df: pd.DataFrame) -> float:
     """Simple average of the last 7 closing prices."""

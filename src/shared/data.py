@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import date
 from typing import Optional
 
 import pandas as pd
@@ -66,6 +67,22 @@ def fetch_daily(ticker: str, days: int = 100) -> Optional[pd.DataFrame]:
     # row missing OHLC so every indicator sees only real bars.
     df = df.dropna(subset=["open", "high", "low", "close"])
     return df.sort_values("date").reset_index(drop=True)
+
+
+def previous_session_row(df: pd.DataFrame, today: date) -> pd.Series:
+    """The most recent row that is NOT ``today`` — yesterday's closed OHLC.
+
+    For calculations anchored to "the prior finished session" (classic/
+    Camarilla pivots, gap-from-prev-close): today's row survives into df
+    live once the market opens (see fetch_daily), so a naive ``iloc[-2]``
+    assumes today's row is always the last one and silently reaches one day
+    too far back before the market opens, when the last row already IS
+    yesterday. Correct in every window: pre-market (df's last row already is
+    yesterday → return it), and mid-session/post-close (today's row is last
+    → step back one)."""
+    if len(df) > 1 and pd.Timestamp(df["date"].iloc[-1]).date() == today:
+        return df.iloc[-2]
+    return df.iloc[-1]
 
 
 def fetch_intraday(ticker: str, interval: str = "5m", days: int = 5) -> Optional[pd.DataFrame]:

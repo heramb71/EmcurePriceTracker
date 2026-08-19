@@ -9,13 +9,20 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import pandas as pd
 
-from src.emcure.intraday import compute_sma7
+from src.emcure.intraday import compute_sma7, exclude_incomplete_today
 from src.radar.universe import adtv_cr
-from src.shared.data import _download_with_retry, _normalise, fetch_daily, fetch_intraday
+from src.shared.data import (
+    _download_with_retry,
+    _normalise,
+    fetch_daily,
+    fetch_intraday,
+    previous_session_row,
+)
 from src.shared.indicators import (
     compute_atr,
     compute_avg_volume,
@@ -27,6 +34,7 @@ from src.shared.indicators import (
 
 logger = logging.getLogger(__name__)
 
+_IST = timezone(timedelta(hours=5, minutes=30))
 _ATR_AVG_WINDOW = 20  # trailing window for ATR-expansion baseline
 
 
@@ -94,7 +102,8 @@ def _return(df_daily: pd.DataFrame, window: int = 20) -> float:
 
 
 def build_snapshot(
-    ticker: str, nifty_daily: Optional[pd.DataFrame] = None
+    ticker: str, nifty_daily: Optional[pd.DataFrame] = None,
+    now: Optional[datetime] = None,
 ) -> Optional[StockFeatures]:
     """Build a :class:`StockFeatures` for ``ticker`` or ``None`` on failure."""
     df = fetch_daily(ticker, days=120)
@@ -102,19 +111,25 @@ def build_snapshot(
         logger.warning("build_snapshot: insufficient daily data for %s", ticker)
         return None
 
+    now = now or datetime.now(_IST)
     intraday = fetch_intraday(ticker, interval="5m", days=5)
 
     try:
         close = df["close"]
         price = float(close.iloc[-1])
-        prev_close = float(close.iloc[-2])
+        prev_row = previous_session_row(df, now.date())
+        prev_close = float(prev_row["close"])
         open_ = float(df["open"].iloc[-1])
-        prev_high = float(df["high"].iloc[-2])
+        prev_high = float(prev_row["high"])
         day_high = float(df["high"].iloc[-1])
         day_low = float(df["low"].iloc[-1])
         _, _, macd_hist = compute_macd(close)
 
-        sma7 = compute_sma7(df)
+        # SMA7 must compare price against prior CLOSED days only — today's row
+        # updates live once the market opens, and averaging it in self-dilutes
+        # the mean-reversion gap (same root cause as the EMCURE managed-cycle
+        # fix; see exclude_incomplete_today's docstring).
+        sma7 = compute_sma7(exclude_incomplete_today(df, now))
         rsi = compute_rsi(close)
         atr = compute_atr(df)
         avg_atr = _avg_atr(df)
