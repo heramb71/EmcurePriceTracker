@@ -319,6 +319,16 @@ signal's forward outcome to measure edge. **It never places trades.**
 > EMCURE+ICICIBANK). The radar is a *hypothesis validator*, not a recommender —
 > alerts carry a mandatory "manual review / no auto-execution" footer and the
 > success metric is forward expectancy, not alert count.
+>
+> The lab's `breakout` (trend-following) variant was also formally gated
+> 2026-08-13, on both the narrow `SYMBOLS` universe and a broader liquid
+> large-cap `BROAD_SYMBOLS` set — **also FAILED**: narrow n=7, PF=0.83,
+> exp=−₹34/trade; broad n=11, PF=0.25, exp=−₹186/trade, maxDD=13.6% (breaches
+> the 12% cap too). The single-slot, regime-filtered, ATR-risk-managed engine
+> trades far less often than a naive per-symbol Donchian channel test
+> suggested, and every verdict comes back negative. Neither entry variant in
+> `src/swing/` clears the gate — stay in cash, do not build a live
+> trend-following bot on this basis.
 
 **Modules:**
 - `universe.py` — 12 symbols + ADTV ≥ ₹100 Cr liquidity gate

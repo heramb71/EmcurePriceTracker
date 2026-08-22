@@ -16,6 +16,16 @@ SYMBOLS: tuple[str, ...] = (
     "SUZLON",
 )
 
+# Broader liquid large-cap set for the breakout-variant gate (2026-08-13):
+# the exploratory ad-hoc Donchian backtest found more/cleaner trend signal in
+# established large-caps than in SYMBOLS' high-beta PSU/thematic names.
+BROAD_SYMBOLS: tuple[str, ...] = (
+    "EMCURE", "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN",
+    "AXISBANK", "KOTAKBANK", "LT", "ITC", "HINDUNILVR", "BHARTIARTL",
+    "MARUTI", "SUNPHARMA", "TATASTEEL", "WIPRO", "HCLTECH",
+    "ULTRACEMCO", "TITAN", "BAJFINANCE", "ASIANPAINT", "NTPC", "POWERGRID",
+)
+
 NIFTY = "^NSEI"
 
 # Liquidity gate: average daily traded value over the trailing window.
