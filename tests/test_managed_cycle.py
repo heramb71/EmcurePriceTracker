@@ -778,6 +778,68 @@ def test_rupee_gap_unchanged_when_pct_unset():
     assert d.action == "reenter"
 
 
+# ── ATR-scaled gap + stop (opt-in; default unchanged) ────────────────────────
+# The 2026-08-22 strategy lab found the fixed ₹20/₹30 constants had decayed to
+# 0.38×/0.57× ATR as EMCURE's volatility rose, putting the stop back inside the
+# daily noise floor. ATR mode holds their meaning constant. See apps/strategy_lab.py.
+
+def test_atr_gap_scales_the_reentry_trigger():
+    cfg = _cfg(reentry_gap_atr=1.0)
+    flat = {"price": 1885.0, "day_high": 1926.0, "day_low": 1878.0,
+            "sma7": 1941.0, "trend_7d": "Choppy", "atr14": 56.0}
+    # threshold = 56 × 1.0 = ₹56 → the live ₹20-gap trade no longer fires...
+    assert decide(None, {**flat, "gap": -20.0}, cfg).action == "wait"
+    # ...but a genuine 1-ATR dislocation does.
+    assert decide(None, {**flat, "gap": -56.0}, cfg).action == "reenter"
+
+
+def test_atr_gap_outranks_pct_and_rupees():
+    """Precedence is ATR > percent > rupees — most scale-invariant wins."""
+    cfg = _cfg(reentry_gap_atr=1.0, reentry_gap_pct=1.4, reentry_gap=20.0)
+    flat = {"price": 1885.0, "sma7": 1941.0, "trend_7d": "Choppy", "atr14": 56.0}
+    # pct would trigger at ₹27.17 and rupees at ₹20; ATR's ₹56 must win, so -₹30 waits.
+    assert decide(None, {**flat, "gap": -30.0}, cfg).action == "wait"
+
+
+def test_atr_modes_degrade_to_defaults_without_atr():
+    """A missing/zero ATR must fall through, never arm a nonsense trigger or
+    silently vanish the stop."""
+    cfg = _cfg(reentry_gap_atr=1.0, sl_atr=2.0, reentry_gap=20.0, sl_rupees=30.0)
+    flat = {"price": 1385.0, "gap": -20.0, "sma7": 1400.0, "trend_7d": "Choppy"}
+    assert decide(None, flat, cfg).action == "reenter"          # falls back to ₹20
+    assert mc.resolve_stop(cfg, 0.0) == 30.0                    # falls back to ₹30
+    assert mc.resolve_entry_gap(cfg, 1400.0, 0.0) == 20.0
+
+
+def test_atr_stop_is_resolved_once_and_stored_in_rupees():
+    """ATR moving while a position is open must not shift the live stop."""
+    cfg = _cfg(sl_atr=2.0, sl_rupees=30.0)
+    pos = mc.set_position(1885.0, 8, cfg, atr=56.0)
+    assert pos["sl_rupees"] == 112.0
+    assert pos["sl"] == 1773.0
+    # A later, larger ATR does not move the stored stop.
+    assert mc.get_position()["sl"] == 1773.0
+
+
+def test_briefing_trigger_and_stop_match_what_the_cycle_acts_on():
+    """The go-live incident: the label read cfg while the order read the stored
+    value, so a '−₹30' message sat over a real −₹100 stop. Both must agree."""
+    cfg = _cfg(reentry_gap_atr=1.0, sl_atr=2.0, targets=(15.0, 20.0, 30.0))
+    block = mc.format_levels_block(cfg, None, sma7=1941.0, atr=56.0)
+    assert "1,885.00" in block          # 1941 − (56 × 1.0)
+    assert "1,773.00" in block          # entry − (56 × 2.0)
+
+
+def test_20_aug_2026_trade_would_not_have_fired_under_atr_mode():
+    """Regression on the real -₹242 loss: bought ₹1,914 on the 09:15 tick with
+    sma7 ₹1,941.37 and ATR ₹55.90, stopped at ₹1,883.70 the same morning."""
+    market = {"price": 1914.0, "gap": 1914.0 - 1941.37, "sma7": 1941.37,
+              "trend_7d": "Choppy", "atr14": 55.90,
+              "day_high": 1926.40, "day_low": 1878.0}
+    assert decide(None, market, _cfg()).action == "reenter"                    # live config buys
+    assert decide(None, market, _cfg(reentry_gap_atr=1.0)).action == "wait"    # ATR config waits
+
+
 # ── 2026-07-09 incident regressions ───────────────────────────────────────────
 # Live incident: a sold-holding day read as net short (see tests/test_broker.py
 # for the held_qty side). These cover the managed-cycle side: the sell path must

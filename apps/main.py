@@ -423,6 +423,11 @@ def _refresh(ticker: str, news_snapshot: dict | None = None, broker=None) -> dic
             # Only consumed by MANAGED_REGIME_FILTER=stabilization (see
             # _regime_permits_reversion) — inert otherwise.
             "recent_closes": df_daily_closed["close"].tail(2).tolist(),
+            # Only consumed by MANAGED_REENTRY_GAP_ATR / MANAGED_SL_ATR — inert
+            # otherwise. Computed from CLOSED days so today's still-moving bar
+            # can't shift the trigger under the strategy mid-session, matching
+            # the no-look-ahead convention apps/strategy_lab.py validates against.
+            "atr14": compute_atr(df_daily_closed),
         }
         # Execute the cycle ONLY during live market hours. _refresh() is also
         # called from the pre-open briefing and the post-close summary for data;
