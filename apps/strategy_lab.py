@@ -287,6 +287,40 @@ def main() -> int:
     print("\n  FULL WINDOW")
     for v in finals:
         print(_row(run(df, v)))
+
+    # Deeper gaps trade less. The live engine already frustrates its operator by
+    # sitting idle for weeks, so the useful question is not "highest PF" but
+    # "most money per YEAR while staying positive in BOTH halves".
+    print("\n" + "=" * 104)
+    print("FRONTIER — edge quality vs trade frequency (stop 2.0×ATR, targets 0.5/0.8/1.2×ATR)")
+    print("=" * 104)
+    years = len(df) / 252.0
+    print(f"  {'gap':<10}{'n':>5}{'/yr':>7}{'win':>8}{'PF':>8}{'exp':>9}"
+          f"{'net/yr':>10}{'maxDD':>9}   {'IS net':>9}{'OOS net':>10}  both+?")
+    for g in (0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25):
+        for regime in ("trend", "stabilization"):
+            v = Variant(f"{g}×/{regime}", "atr", g, 2.0, (0.5, 0.8, 1.2), regime)
+            full = run(df, v)
+            if not full["n"]:
+                continue
+            is_s = run(df.iloc[:mid], v)
+            oos = run(df.iloc[mid - 20:].reset_index(drop=True), v)
+            is_net = is_s.get("net", 0.0)
+            oos_net = oos.get("net", 0.0)
+            both = "YES" if is_net > 0 and oos_net > 0 else "no"
+            pf = "inf" if full["pf"] == float("inf") else f"{full['pf']:.2f}"
+            tag = f"{g}×{'/stab' if regime == 'stabilization' else ''}"
+            print(f"  {tag:<10}{full['n']:>5}{full['n']/years:>7.1f}"
+                  f"{full['win_pct']:>7.1f}%{pf:>8}{full['exp']:>9.0f}"
+                  f"{full['net']/years:>10,.0f}{full['maxdd']:>9,.0f}   "
+                  f"{is_net:>9,.0f}{oos_net:>10,.0f}  {both}")
+    print("\n  LIVE baseline for comparison:")
+    live = run(df, finals[0])
+    print(f"  {'₹20 fixed':<10}{live['n']:>5}{live['n']/years:>7.1f}"
+          f"{live['win_pct']:>7.1f}%{live['pf']:>8.2f}{live['exp']:>9.0f}"
+          f"{live['net']/years:>10,.0f}{live['maxdd']:>9,.0f}   "
+          f"{run(df.iloc[:mid], finals[0])['net']:>9,.0f}"
+          f"{run(df.iloc[mid-20:].reset_index(drop=True), finals[0])['net']:>10,.0f}  no")
     return 0
 
 
