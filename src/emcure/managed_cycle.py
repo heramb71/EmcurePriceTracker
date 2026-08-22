@@ -62,6 +62,8 @@ class ManagedConfig:
     block_reentry_after_stop: bool  # no re-entry the same day as a stop-out
     reentry_gap_pct: float = 0.0  # >0 → gap trigger = sma7 × pct/100 (overrides the ₹ gap)
     regime_filter: str = "trend"  # MANAGED_REGIME_FILTER — trend | off | stabilization
+    reentry_gap_atr: float = 0.0  # >0 → gap trigger = atr14 × this (overrides ₹ and pct)
+    sl_atr: float = 0.0           # >0 → stop = atr14 × this (overrides sl_rupees)
 
     @classmethod
     def from_env(cls) -> "ManagedConfig":
@@ -90,6 +92,13 @@ class ManagedConfig:
             # are the 2026-08-05 technical-research variants — opt-in only, see
             # _regime_permits_reversion.
             regime_filter    = os.getenv("MANAGED_REGIME_FILTER", "trend").strip().lower(),
+            # ATR mode (2026-08-22 strategy lab). Percentage mode above fixes the
+            # PRICE drift but not the VOLATILITY drift: ₹20/₹30 were calibrated
+            # against a ~₹19 median daily wiggle and are now 0.38×/0.57× a ₹52
+            # ATR — the stop is back inside the noise floor. Scaling both by ATR
+            # holds their meaning constant. 0 = off, preserving today's behavior.
+            reentry_gap_atr  = float(os.getenv("MANAGED_REENTRY_GAP_ATR", "0") or 0),
+            sl_atr           = float(os.getenv("MANAGED_SL_ATR", "0") or 0),
         )
 
 
@@ -129,6 +138,31 @@ def choose_target(entry: float, probs: dict, cfg: ManagedConfig) -> Optional[dic
 def _entry_signal_fires(gap: float, threshold: float) -> bool:
     """SMA7 mean-reversion entry signal: price at least `threshold` below sma7."""
     return gap <= -threshold
+
+
+def resolve_entry_gap(cfg: ManagedConfig, sma7: float, atr: float) -> float:
+    """The dip depth (₹) that arms a re-entry, in whichever unit is configured.
+
+    Precedence ATR > percent > rupees — most scale-invariant wins. ATR mode holds
+    the trigger's meaning constant as BOTH price and volatility drift; percent mode
+    only tracks price; the plain ₹ default tracks neither and silently decays (the
+    2026-08-22 strategy lab found ₹20 had shrunk to 0.38×ATR). Each mode falls
+    through to the next when its input is missing, so a stale/NaN ATR degrades to
+    today's behavior rather than arming a nonsense trigger."""
+    if cfg.reentry_gap_atr > 0 and atr > 0:
+        return round(atr * cfg.reentry_gap_atr, 2)
+    if cfg.reentry_gap_pct > 0 and sma7 > 0:
+        return round(sma7 * cfg.reentry_gap_pct / 100, 2)
+    return cfg.reentry_gap
+
+
+def resolve_stop(cfg: ManagedConfig, atr: float) -> float:
+    """The stop distance (₹) below entry. ATR mode when configured and available,
+    else the fixed MANAGED_SL. Same degrade-to-default rule as resolve_entry_gap:
+    a missing ATR must never widen or vanish the stop."""
+    if cfg.sl_atr > 0 and atr > 0:
+        return round(atr * cfg.sl_atr, 2)
+    return cfg.sl_rupees
 
 
 def _regime_permits_reversion(market: dict, cfg: ManagedConfig) -> bool:
@@ -233,10 +267,9 @@ def decide(position: Optional[dict], market: dict, cfg: ManagedConfig) -> Decisi
     # Flat → SMA7 mean-reversion re-entry.
     gap   = float(market.get("gap", 0) or 0)          # price − sma7 (negative = below)
     sma7  = float(market.get("sma7", 0) or 0)
+    atr   = float(market.get("atr14", 0) or 0)
     trend = market.get("trend_7d", "")
-    threshold = cfg.reentry_gap
-    if cfg.reentry_gap_pct > 0 and sma7 > 0:
-        threshold = round(sma7 * cfg.reentry_gap_pct / 100, 2)
+    threshold = resolve_entry_gap(cfg, sma7, atr)
     if _entry_signal_fires(gap, threshold) and _regime_permits_reversion(market, cfg):
         return Decision(
             "reenter", reason=f"Price is ₹{abs(gap):.0f} below its recent average — buying the dip",
@@ -295,11 +328,17 @@ def _update_position(**fields) -> None:
     _mutate(_apply)
 
 
-def set_position(entry: float, qty: int, cfg: ManagedConfig) -> dict:
+def set_position(entry: float, qty: int, cfg: ManagedConfig, atr: float = 0.0) -> dict:
+    # The stop is resolved ONCE, here, and stored in rupees — every later read
+    # (the resting exchange order, the ratchet, the alert labels) uses the stored
+    # value, so an ATR that moves while the position is open cannot shift the
+    # stop under a live trade.
+    sl_rupees = resolve_stop(cfg, atr)
     pos = {
         "entry":            round(float(entry), 2),
         "qty":              int(qty),
-        "sl":               round(float(entry) - cfg.sl_rupees, 2),
+        "sl":               round(float(entry) - sl_rupees, 2),
+        "sl_rupees":        sl_rupees,
         "targets":          list(cfg.targets),
         "opened_at":        datetime.now().isoformat(timespec="seconds"),
         "high_since_entry": round(float(entry), 2),
@@ -492,7 +531,7 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
         if held and held > 0:
             avg = _broker_avg_price(broker, ticker)
             if avg > 0:
-                position = set_position(avg, held, cfg)
+                position = set_position(avg, held, cfg, float(market.get("atr14", 0) or 0))
                 events.append(("managed_adopt", {
                     "ticker": ticker, "entry": avg, "qty": held,
                     "sl": position["sl"], "targets": list(cfg.targets),
@@ -591,7 +630,8 @@ def step(ticker: str, market: dict, broker, cfg: ManagedConfig,
     if decision.action in ("sell", "exit_sl"):
         return events + _execute_sell(ticker, decision, broker, now, cfg)
     if decision.action == "reenter":
-        return events + _execute_buy(ticker, decision, broker, cfg, now)
+        return events + _execute_buy(ticker, decision, broker, cfg, now,
+                                     float(market.get("atr14", 0) or 0))
     return events
 
 
@@ -780,7 +820,7 @@ def _execute_sell(ticker: str, decision: Decision, broker, now: datetime,
 
 
 def _execute_buy(ticker: str, decision: Decision, broker, cfg: ManagedConfig,
-                 now: datetime) -> list[tuple[str, dict]]:
+                 now: datetime, atr: float = 0.0) -> list[tuple[str, dict]]:
     if broker:
         held = broker.held_qty(ticker)
         if held is not None and held < 0:
@@ -808,7 +848,7 @@ def _execute_buy(ticker: str, decision: Decision, broker, cfg: ManagedConfig,
         return [("managed_open_failed", {"ticker": ticker, "qty": decision.qty})]
     entry = fill["fill_price"] if fill else decision.price
     qty   = fill["filled_qty"] if fill else decision.qty
-    pos   = set_position(entry, qty, cfg)
+    pos   = set_position(entry, qty, cfg, atr)
     if broker is not None:
         _update_position(stop_order_id=broker.place_stop_loss(ticker, qty, pos["sl"]),
                          stop_trigger=pos["sl"], stop_placed_on=now.date().isoformat())
@@ -824,7 +864,8 @@ def _execute_buy(ticker: str, decision: Decision, broker, cfg: ManagedConfig,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def format_levels_block(cfg: ManagedConfig, position: Optional[dict],
-                        sma7: float, probs: Optional[dict] = None) -> str:
+                        sma7: float, probs: Optional[dict] = None,
+                        atr: float = 0.0) -> str:
     """Managed-cycle levels for the scheduled briefings — the target ladder + stop
     from the booked entry when holding, or the SMA7 re-entry trigger when flat.
     Replaces the legacy +₹10/20/25 probability ladder so every number a briefing
@@ -851,17 +892,18 @@ def format_levels_block(cfg: ManagedConfig, position: Optional[dict],
             f"Will exit to protect if it drops to ₹{sl:,.2f}",
         ])
 
-    # Flat — waiting to buy the dip. Mirror decide()'s threshold exactly so the
-    # briefing's trigger price matches what the cycle will actually act on.
-    gap_rupees = cfg.reentry_gap
-    if cfg.reentry_gap_pct > 0 and float(sma7) > 0:
-        gap_rupees = round(float(sma7) * cfg.reentry_gap_pct / 100, 2)
+    # Flat — waiting to buy the dip. Route through the SAME resolvers decide() and
+    # set_position() use, so the briefing's trigger and stop can never drift from
+    # what the cycle will actually act on. (At go-live the label read cfg while the
+    # order read the stored value, and a "−₹30" message sat over a real −₹100 stop.)
+    gap_rupees = resolve_entry_gap(cfg, float(sma7), atr)
+    sl_rupees  = resolve_stop(cfg, atr)
     reentry = round(float(sma7) - gap_rupees, 2)
     top     = round(reentry + max(cfg.targets), 2)
     return "\n".join([
         f"📊 *No shares right now — watching to buy*{test}",
         f"Will buy {cfg.qty} shares if the price dips to about ₹{reentry:,.2f}",
-        f"Then aim for ₹{top:,.2f}, exiting to protect near ₹{reentry - cfg.sl_rupees:,.2f}",
+        f"Then aim for ₹{top:,.2f}, exiting to protect near ₹{reentry - sl_rupees:,.2f}",
     ])
 
 
@@ -873,7 +915,8 @@ def levels_block_from(data: dict) -> Optional[str]:
     if not cfg.enabled:
         return None
     sma7 = float((data.get("sma7_gap") or {}).get("sma7", 0) or 0)
-    return format_levels_block(cfg, get_position(), sma7, data.get("managed_probs"))
+    atr  = float((data.get("indicators") or {}).get("atr", 0) or 0)
+    return format_levels_block(cfg, get_position(), sma7, data.get("managed_probs"), atr)
 
 
 def format_managed_event(ticker: str, event_type: str, p: dict) -> Optional[str]:

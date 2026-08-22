@@ -30,6 +30,9 @@ htmlcov/
 .vscode/
 *.swp
 
+# BMad skills — machine-local symlinks into the shared Workspace-level install
+.claude/skills/bmad-*
+
 # Runtime state
 strategy_state.json
 trade_state.json

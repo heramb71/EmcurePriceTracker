@@ -17,7 +17,7 @@ import yfinance as yf
 
 from src.swing import backtest as bt
 from src.swing import metrics as mx
-from src.swing.universe import NIFTY, SYMBOLS, to_yf
+from src.swing.universe import BROAD_SYMBOLS, NIFTY, SYMBOLS, to_yf
 
 WINDOWS = {"3M": 63, "6M": 126, "1Y": 252, "3Y": 756}
 SCALE_CAPITALS = [15_000, 50_000, 100_000, 500_000]
@@ -34,10 +34,10 @@ def _fetch(symbol: str) -> pd.DataFrame | None:
     return df if len(df) > 60 else None
 
 
-def _load() -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
-    print("Downloading universe (3y daily)...", flush=True)
+def _load(symbols: tuple[str, ...] = SYMBOLS) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
+    print(f"Downloading universe (3y daily, {len(symbols)} symbols)...", flush=True)
     raw: dict[str, pd.DataFrame] = {}
-    for s in SYMBOLS:
+    for s in symbols:
         df = _fetch(s)
         if df is None:
             print(f"  ! {s}: insufficient data, skipped")
@@ -107,6 +107,40 @@ def main() -> int:
           f"trades≥{mx.GATE_MIN_TRADES}")
     verdict = "PASS — proceed to production" if m.passes_gate() else "FAIL — stay in cash"
     print(f"  VERDICT: {verdict}")
+
+    print("\n" + "=" * 96)
+    print("GATE VERDICT — breakout variant (3Y, ₹15k, +gate>80), narrow universe (SYMBOLS)")
+    print("=" * 96)
+    res_bo_narrow = bt.run(raw, nifty, capital=15_000, variant="breakout", use_score_gate=True)
+    m_bo_narrow = mx.compute(res_bo_narrow)
+    print(_row("breakout (narrow)", m_bo_narrow))
+    print(f"\n  Required: PF≥{mx.GATE_PF}  expectancy>0  maxDD≤{mx.GATE_MAXDD*100:.0f}%  "
+          f"trades≥{mx.GATE_MIN_TRADES}")
+    verdict_bo_narrow = "PASS — proceed to production" if m_bo_narrow.passes_gate() else "FAIL — stay in cash"
+    print(f"  VERDICT: {verdict_bo_narrow}")
+
+    print("\n" + "=" * 96)
+    print("GATE VERDICT — breakout variant (3Y, ₹15k, +gate>80), broad universe (BROAD_SYMBOLS)")
+    print("=" * 96)
+    raw_broad, nifty_broad = _load(BROAD_SYMBOLS)
+    if not raw_broad:
+        print("No tradable symbols downloaded for the broad universe — skipping.")
+        verdict_bo_broad = "N/A — no data"
+    else:
+        res_bo_broad = bt.run(raw_broad, nifty_broad, capital=15_000, variant="breakout", use_score_gate=True)
+        m_bo_broad = mx.compute(res_bo_broad)
+        print(_row("breakout (broad)", m_bo_broad))
+        print(f"\n  Required: PF≥{mx.GATE_PF}  expectancy>0  maxDD≤{mx.GATE_MAXDD*100:.0f}%  "
+              f"trades≥{mx.GATE_MIN_TRADES}")
+        verdict_bo_broad = "PASS — proceed to production" if m_bo_broad.passes_gate() else "FAIL — stay in cash"
+        print(f"  VERDICT: {verdict_bo_broad}")
+
+    print("\n" + "=" * 96)
+    print("SUMMARY")
+    print("=" * 96)
+    print(f"  pullback (narrow):         {verdict}")
+    print(f"  breakout (narrow):         {verdict_bo_narrow}")
+    print(f"  breakout (broad):          {verdict_bo_broad}")
     return 0
 
 
