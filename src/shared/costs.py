@@ -63,3 +63,33 @@ def net_pnl(entry: float, exit_price: float, qty: int, gross_pnl: float) -> tupl
     """Return (net_pnl, charges) for a trade given its gross P&L."""
     charges = compute_charges(entry, exit_price, qty)
     return round(gross_pnl - charges, 2), charges
+
+
+# ── Intraday (MIS) — KittyBot's product ──────────────────────────────────────
+# Zerodha intraday: brokerage is min(₹20, 0.03%) per executed order; STT is
+# 0.025% on the SELL side only; stamp duty 0.003% on the BUY side. Exchange
+# txn / SEBI / GST are the same rates as delivery. No DP charge (no demat debit).
+_MIS_BROKERAGE_PCT = 0.0003
+_MIS_BROKERAGE_CAP = 20.0
+_MIS_STT_SELL_PCT = 0.00025
+_MIS_STAMP_BUY_PCT = 0.00003
+
+
+def intraday_charges(buy_price: float, sell_price: float, qty: int) -> float:
+    """Round-trip charges for one MIS intraday trade (LONG or SHORT), in rupees.
+
+    Pass the BUY-side and SELL-side prices whatever the order they executed in —
+    a short sells first and buys back, the statutory charges don't care.
+    """
+    if buy_price <= 0 or sell_price <= 0 or qty <= 0:
+        return 0.0
+    buy_value, sell_value = buy_price * qty, sell_price * qty
+    turnover = buy_value + sell_value
+    brokerage = (min(_MIS_BROKERAGE_CAP, buy_value * _MIS_BROKERAGE_PCT)
+                 + min(_MIS_BROKERAGE_CAP, sell_value * _MIS_BROKERAGE_PCT))
+    exchange_txn = turnover * _EXCHANGE_TXN_PCT
+    sebi = turnover * _SEBI_PCT
+    gst = (brokerage + exchange_txn + sebi) * _GST_PCT
+    stt = sell_value * _MIS_STT_SELL_PCT
+    stamp = buy_value * _MIS_STAMP_BUY_PCT
+    return round(brokerage + exchange_txn + sebi + gst + stt + stamp, 2)

@@ -494,6 +494,8 @@ python -m apps.kitty_screener             # write daily_picks.json (ranked kitty
 python -m apps.kitty_screener --dry-run   # print the ranking, write nothing
 python -m apps.kittybot_headless          # the trading service (paper by default)
 python -m pytest tests/kittybot           # 99 unit + integration tests
+python -m apps.checkpoint_timing_lab       # timing lab: OR15 vs OR30 vs OR15+hold@09:45 (KittyBot)
+                                          #   and managed-cycle entries from 09:15/09:30/09:45 (EMCURE)
 # Deploy as its own service (leaves emcure-tracker/crypto untouched):
 sudo cp /opt/emcure/deploy/kittybot.service /etc/systemd/system/emcure-kittybot.service
 sudo systemctl daemon-reload && sudo systemctl enable --now emcure-kittybot

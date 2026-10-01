@@ -35,3 +35,25 @@ def test_round_trip_charges_adds_the_dp_sell_debit():
     statutory = compute_charges(1700.0, 1720.0, 6)
     assert round_trip_charges(1700.0, 1720.0, 6) == round(statutory + DP_CHARGE_PER_SELL, 2)
     assert round_trip_charges(0, 1720.0, 6) == 0.0
+
+
+def test_intraday_charges_hand_computed():
+    from src.shared.costs import intraday_charges
+    # buy ₹10,000 / sell ₹10,100: brokerage 3.00+3.03, txn 0.597, SEBI 0.0201,
+    # GST 18% of those, STT 0.025% of sell, stamp 0.003% of buy.
+    expected = 6.03 + 0.59697 + 0.0201 + (6.03 + 0.59697 + 0.0201) * 0.18 + 2.525 + 0.3
+    assert intraday_charges(100.0, 101.0, 100) == round(expected, 2)
+
+
+def test_intraday_brokerage_capped_at_20_per_order():
+    from src.shared.costs import intraday_charges
+    big = intraday_charges(1000.0, 1000.0, 1000)       # ₹10L each side
+    # 0.03% of ₹10L = ₹300 → capped to ₹20 per order (₹40 round trip).
+    txn, sebi = 2_000_000 * 0.0000297, 2_000_000 * 0.000001
+    assert big == round(40 + txn + sebi + (40 + txn + sebi) * 0.18 + 250 + 30, 2)
+    assert intraday_charges(0, 100.0, 10) == 0.0
+
+
+def test_intraday_much_cheaper_than_delivery():
+    from src.shared.costs import intraday_charges
+    assert intraday_charges(1700.0, 1720.0, 50) < compute_charges(1700.0, 1720.0, 50)
