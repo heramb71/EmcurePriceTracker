@@ -23,8 +23,13 @@ max_picks = 5               # consider only the top-N ranked candidates
 # reconstitutes semi-annually, re-verify against nseindia.com periodically).
 # These carry no scores when used as the bot's own fallback, so it trades them
 # purely on the opening-range breakout with default target/stop percentages.
+# TATAMOTORS -> TMCV (2026-10-02): Tata Motors demerged 2025-10-01; the old
+# TATAMOTORS symbol stopped trading and the PV business was renamed TMPV
+# (already present below). The CV business kept the "Tata Motors" name under
+# the new symbol TMCV — swapped in here so the universe still carries both
+# post-demerger entities instead of one dead ticker.
 fallback_universe = [
-    "ADANIENT", "ADANIGREEN", "ADANIPOWER", "ADANIENSOL", "TATAMOTORS", "VEDL",
+    "ADANIENT", "ADANIGREEN", "ADANIPOWER", "ADANIENSOL", "TMCV", "VEDL",
     "JINDALSTEL", "HINDALCO", "TATASTEEL", "BANKBARODA", "CANBK", "PNB",
     "INDUSINDBK", "BEL", "HAL", "CGPOWER", "TATAPOWER", "JSWENERGY", "TRENT",
     "IRFC", "PFC", "RECLTD", "ETERNAL", "SWIGGY", "LODHA", "DLF", "DIXON",

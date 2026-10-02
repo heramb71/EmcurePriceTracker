@@ -31,8 +31,11 @@ logger = logging.getLogger(__name__)
 # Fallback kitty universe, used only when daily_picks.json is missing/unreadable.
 # High-beta PSU / metals / thematic names that routinely move 2–5% intraday —
 # this is also the screener's actual scan universe (apps/kitty_screener.py).
+# TATAMOTORS -> TMCV (2026-10-02): Tata Motors demerged 2025-10-01; the old
+# TATAMOTORS symbol stopped trading. The PV business was renamed TMPV (see
+# NIFTY_50 below); the CV business kept the "Tata Motors" name under TMCV.
 _CURATED_HIGH_BETA: tuple[str, ...] = (
-    "ADANIENT", "ADANIGREEN", "ADANIPOWER", "ADANIENSOL", "TATAMOTORS", "VEDL",
+    "ADANIENT", "ADANIGREEN", "ADANIPOWER", "ADANIENSOL", "TMCV", "VEDL",
     "JINDALSTEL", "HINDALCO", "TATASTEEL", "BANKBARODA", "CANBK", "PNB",
     "INDUSINDBK", "BEL", "HAL", "CGPOWER", "TATAPOWER", "JSWENERGY", "TRENT",
     "IRFC", "PFC", "RECLTD", "ETERNAL", "SWIGGY", "LODHA", "DLF", "DIXON",
